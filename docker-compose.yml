@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # --- INFRASTRUCTURE ---
+  redis:
+    image: redis:alpine
+    restart: always
+
+  tor:
+    image: goldy/tor-hidden-service
+    restart: always
+    environment:
+      # Example: for the client, this would be updated with keys
+      - ONION_SERVICE_NAME=onion-pipe
+      - ONION_SERVICE_PORT=80:client:80
+
+  # --- RELAY STACK (sapphive/onion-pipe-relay) ---
+  relay:
+    build: 
+      context: .
+      dockerfile: docker/relay/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=info
+    depends_on:
+      - redis
+
+  # --- BRIDGE STACK (sapphive/onion-pipe-bridge) ---
+  bridge:
+    build:
+      context: .
+      dockerfile: docker/bridge/Dockerfile
+    environment:
+      - RELAY_URL=ws://relay:3000
+      - TOR_SOCKS=socks5h://tor:9050
+    depends_on:
+      - tor
+
+  # --- CLIENT STACK (sapphive/onion-pipe) ---
+  client:
+    build:
+      context: .
+      dockerfile: docker/client/Dockerfile
+    volumes:
+      - ./keys:/keys
+    environment:
+      - TARGET_URL=http://host.docker.internal:8080
+      - PRIVATE_KEY_PATH=/keys/keys.json
+    depends_on:
+      - tor
