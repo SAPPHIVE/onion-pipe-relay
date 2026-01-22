@@ -1,6 +1,6 @@
 # <img src="https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/torbrowser.svg" height="32"> Sapphive Onion-Pipe Relay Engine
 
-![Docker Build](https://img.shields.io/docker/cloud/build/sapphive/onion-pipe-relay) ![License](https://img.shields.io/badge/license-MIT-green) ![Network](https://img.shields.io/badge/network-decentralized-blue)
+![Docker Build](https://img.shields.io/docker/pulls/sapphive/onion-pipe-relay) ![License](https://img.shields.io/badge/license-MIT-green) ![Network](https://img.shields.io/badge/network-decentralized-blue)
 
 ## 🌐 The Engine of Onion-Pipe
 The **Onion-Pipe Relay Engine** is the core infrastructure behind the Sapphive community network. While the standard [Onion-Pipe Client](https://hub.docker.com/r/sapphive/onion-pipe) provides the local tunnel, this image drives the global relay and bridge system that makes zero-knowledge webhook delivery possible.

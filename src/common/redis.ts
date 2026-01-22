@@ -8,6 +8,7 @@ export interface TokenMetadata {
     public_key: string;
     status: 'active' | 'disabled';
     created_at: string;
+    github_id?: string;
 }
 
 export interface BridgeHeartbeat {
@@ -39,6 +40,38 @@ export class RedisService {
 
     async setTokenMetadata(token: string, metadata: TokenMetadata) {
         await this.client.hSet(`token:${token}`, metadata as any);
+        if (metadata.github_id) {
+            await this.client.sAdd(`user_tokens:${metadata.github_id}`, token);
+        }
+        await this.client.sAdd('all_tokens', token);
+    }
+
+    async getUserTokens(githubId: string): Promise<{token: string, metadata: TokenMetadata}[]> {
+        const tokens = await this.client.sMembers(`user_tokens:${githubId}`);
+        const result = [];
+        for (const token of tokens) {
+            const meta = await this.getTokenMetadata(token);
+            if (meta) result.push({ token, metadata: meta });
+        }
+        return result;
+    }
+
+    async getAllTokens(): Promise<{token: string, metadata: TokenMetadata}[]> {
+        const tokens = await this.client.sMembers('all_tokens');
+        const result = [];
+        for (const token of tokens) {
+            const meta = await this.getTokenMetadata(token);
+            if (meta) result.push({ token, metadata: meta });
+        }
+        return result;
+    }
+
+    async deleteToken(token: string, githubId?: string) {
+        await this.client.del(`token:${token}`);
+        await this.client.sRem('all_tokens', token);
+        if (githubId) {
+            await this.client.sRem(`user_tokens:${githubId}`, token);
+        }
     }
 
     async updateBridgeHeartbeat(heartbeat: BridgeHeartbeat) {
