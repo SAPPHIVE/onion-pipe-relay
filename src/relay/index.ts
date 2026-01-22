@@ -185,8 +185,57 @@ if (IS_MASTER) {
 
     app.get('/auth/github/callback', 
         passport.authenticate('github', { failureRedirect: '/login' }),
-        (req, res) => res.redirect('/dashboard')
+        (req, res) => {
+            const isCli = (req.session as any).isCliAuth;
+            if (isCli) {
+                delete (req.session as any).isCliAuth;
+                return res.redirect('/cli-auth');
+            }
+            res.redirect('/dashboard');
+        }
     );
+
+    app.get('/cli-auth', requireAuth, async (req, res) => {
+        const isAdmin = req.cookies.auth_admin === 'true';
+        if (isAdmin) return res.send("Admin cannot use CLI auth codes.");
+        
+        const user = req.user as PassportUser;
+        const code = await redis.createAuthCode(user.id);
+        
+        res.send(`
+            <html>
+            <head>
+                <title>CLI Authentication | Onion-Pipe</title>
+                <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
+                <script src="https://cdn.tailwindcss.com"></script>
+            </head>
+            <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
+                <div class="max-w-md w-full bg-slate-900 p-8 rounded-2xl shadow-2xl border border-slate-800 text-center">
+                    <h1 class="text-2xl font-bold mb-2">CLI Authentication</h1>
+                    <p class="text-slate-500 text-sm mb-8 font-mono uppercase tracking-widest leading-none">Your One-Time Device Code</p>
+                    
+                    <div class="bg-slate-950 border-2 border-dashed border-indigo-500/50 p-6 rounded-xl mb-6">
+                        <span class="text-5xl font-black font-mono tracking-[0.2em] text-indigo-400">${code}</span>
+                    </div>
+
+                    <p class="text-slate-400 text-xs mb-8">Paste this code into your terminal to complete the <code class="bg-black px-1 text-indigo-300">onion-pipe login</code> command. It expires in 5 minutes.</p>
+
+                    <a href="/dashboard" class="text-slate-500 hover:text-white text-xs underline transition">Go to Dashboard</a>
+                </div>
+            </body>
+            </html>
+        `);
+    });
+
+    app.post('/auth/cli/exchange', async (req, res) => {
+        const { code } = req.body;
+        if (!code) return res.status(400).json({ error: 'Code required' });
+        
+        const apiKey = await redis.exchangeAuthCode(code);
+        if (!apiKey) return res.status(401).json({ error: 'Invalid or expired code' });
+        
+        res.json({ api_key: apiKey });
+    });
 
     app.post('/login', (req, res) => {
         if (req.body.username === ADMIN_USER && req.body.password === ADMIN_PASSWORD) {
@@ -207,11 +256,13 @@ if (IS_MASTER) {
         const isAdmin = req.cookies.auth_admin === 'true';
         const user = req.user as PassportUser;
         const username = isAdmin ? 'Super Admin' : user.username;
+        const apiKey = !isAdmin ? await redis.getOrCreateUserApiKey(user.id) : null;
         
         res.send(`
             <html>
             <head>
                 <title>Dashboard | Onion-Pipe</title>
+                <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-950 text-slate-100 font-sans">
@@ -229,6 +280,19 @@ if (IS_MASTER) {
                 </nav>
 
                 <main class="max-w-7xl mx-auto px-4 py-8">
+                    ${!isAdmin ? `
+                    <div class="bg-indigo-600/10 border border-indigo-500/30 p-4 rounded-xl mb-8 flex items-center justify-between">
+                        <div>
+                            <p class="text-[10px] uppercase font-bold text-indigo-400 mb-1">Your Account API Key (Secret)</p>
+                            <code id="api-key" class="text-indigo-200 font-mono text-sm blur-sm hover:blur-none transition cursor-pointer select-all">${apiKey}</code>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-[10px] text-slate-500 uppercase font-bold">CLI Usage</p>
+                            <code class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400">onion-pipe login</code>
+                        </div>
+                    </div>
+                    ` : ''}
+
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
                         <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
                             <p class="text-slate-500 text-sm mb-1">Network Status</p>
@@ -259,8 +323,31 @@ if (IS_MASTER) {
                     <div class="bg-slate-900 border border-slate-800 rounded-2xl shadow-lg">
                         <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
                             <h2 class="font-bold text-lg">${isAdmin ? 'All Registered Hooks' : 'Your Managed Hooks'}</h2>
-                            <button onclick="refreshTokens()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md transition">Refresh Hooks</button>
+                            <div class="flex space-x-2">
+                                ${!isAdmin ? `<button onclick="showAddHook()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">+ Add New Hook</button>` : ''}
+                                <button onclick="refreshTokens()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Hooks</button>
+                            </div>
                         </div>
+
+                        <!-- Add Hook Modal/Form -->
+                        <div id="add-hook-form" class="hidden p-6 border-b border-slate-800 bg-slate-800/20">
+                            <h3 class="text-sm font-bold mb-4 text-indigo-300 uppercase tracking-widest">Register New Mapping</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1">Onion Service ID (without .onion)</label>
+                                    <input id="new-onion" type="text" placeholder="e.g. v2c3...f4" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] text-slate-500 uppercase font-bold mb-1">X25519 Public Key (Hex)</label>
+                                    <input id="new-pubkey" type="text" placeholder="Get this from your client" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500">
+                                </div>
+                            </div>
+                            <div class="mt-4 flex justify-end space-x-3">
+                                <button onclick="showAddHook(false)" class="text-xs text-slate-400 hover:text-white transition">Cancel</button>
+                                <button onclick="submitNewHook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-xs font-bold transition">Create Hook</button>
+                            </div>
+                        </div>
+
                         <div class="p-6">
                             <div id="tokens-list" class="space-y-4">
                                 <p class="text-slate-500 italic text-center py-10">Fetching your registered services...</p>
@@ -270,6 +357,34 @@ if (IS_MASTER) {
                 </main>
 
                 <script>
+                    function showAddHook(show = true) {
+                        document.getElementById('add-hook-form').classList.toggle('hidden', !show);
+                    }
+
+                    async function submitNewHook() {
+                        const onion = document.getElementById('new-onion').value.trim();
+                        const pubkey = document.getElementById('new-pubkey').value.trim();
+                        if (!onion || !pubkey) return alert('Please fill all fields');
+
+                        try {
+                            const res = await fetch('/register', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                    onion_service_id: onion.replace('.onion', ''),
+                                    public_key: pubkey
+                                })
+                            });
+                            if (!res.ok) throw new Error('Failed to register');
+                            const data = await res.json();
+                            alert('Hook created successfully! Token: ' + data.token);
+                            showAddHook(false);
+                            document.getElementById('new-onion').value = '';
+                            document.getElementById('new-pubkey').value = '';
+                            refreshTokens();
+                        } catch (e) { alert(e.message); }
+                    }
+
                     async function refreshNodes() {
                         const pre = document.getElementById('nodes');
                         if (!pre) return;
@@ -396,12 +511,23 @@ wss.on('connection', (ws, req) => {
 });
 
 app.post('/register', async (req, res) => {
-    const { onion_service_id, public_key, registration_secret, github_id } = req.body;
+    const { onion_service_id, public_key, registration_secret, github_id, token: apiKey } = req.body;
 
-    // Optional restriction if Master specifies it
-    if (IS_MASTER && process.env.REGISTRATION_SECRET) {
+    let targetUserId = null;
+
+    // 1. If an API Key (token) is provided, validate it
+    if (apiKey) {
+        const ownerId = await redis.getUserIdByApiKey(apiKey);
+        if (!ownerId) {
+            return res.status(401).json({ error: 'Invalid User API Token' });
+        }
+        targetUserId = ownerId;
+    }
+
+    // 2. If no API Key, fallback to Registration Secret (Legacy/Anonymous mode)
+    if (!targetUserId && IS_MASTER && process.env.REGISTRATION_SECRET) {
         if (registration_secret !== process.env.REGISTRATION_SECRET) {
-            return res.status(403).json({ error: 'Unauthorized registration' });
+            return res.status(403).json({ error: 'Unauthorized registration: Please provide a valid API Token' });
         }
     }
 
@@ -413,8 +539,10 @@ app.post('/register', async (req, res) => {
         created_at: Math.floor(Date.now() / 1000).toString()
     };
 
-    // Associate with GitHub user if authenticated or provided
-    if (req.user) {
+    // 3. Associate with the User (from API Key, Session, or explicit ID)
+    if (targetUserId) {
+        metadata.github_id = targetUserId;
+    } else if (req.user) {
         metadata.github_id = (req.user as any).id;
     } else if (github_id) {
         metadata.github_id = github_id;

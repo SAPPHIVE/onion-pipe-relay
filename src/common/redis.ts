@@ -1,5 +1,6 @@
 import { createClient } from 'redis';
 import pino from 'pino';
+import { v4 as uuidv4 } from 'uuid';
 
 const logger = pino({ name: 'RedisClient' });
 
@@ -54,6 +55,33 @@ export class RedisService {
             if (meta) result.push({ token, metadata: meta });
         }
         return result;
+    }
+
+    async getOrCreateUserApiKey(githubId: string): Promise<string> {
+        let key = await this.client.get(`api_key:${githubId}`);
+        if (!key) {
+            key = `op_${uuidv4().replace(/-/g, '')}`;
+            await this.client.set(`api_key:${githubId}`, key);
+            await this.client.set(`api_key_owner:${key}`, githubId);
+        }
+        return key;
+    }
+
+    async getUserIdByApiKey(apiKey: string): Promise<string | null> {
+        return await this.client.get(`api_key_owner:${apiKey}`);
+    }
+
+    async createAuthCode(githubId: string): Promise<string> {
+        const code = Math.random().toString(36).substring(2, 8).toUpperCase(); // 6 chars
+        await this.client.set(`auth_code:${code}`, githubId, { EX: 300 }); // 5 mins expiry
+        return code;
+    }
+
+    async exchangeAuthCode(code: string): Promise<string | null> {
+        const githubId = await this.client.get(`auth_code:${code}`);
+        if (!githubId) return null;
+        await this.client.del(`auth_code:${code}`);
+        return await this.getOrCreateUserApiKey(githubId);
     }
 
     async getAllTokens(): Promise<{token: string, metadata: TokenMetadata}[]> {
