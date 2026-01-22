@@ -430,14 +430,14 @@ if (IS_MASTER) {
                                 <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
                                     <div class="flex-1 min-w-0">
                                         <div class="flex items-center space-x-2 mb-1">
-                                            <span class="px-2 py-0.5 bg-green-500/20 text-green-400 text-[10px] font-bold uppercase rounded leading-none">\\\${t.metadata.status}</span>
-                                            <code class="text-indigo-400 font-mono text-xs truncate font-bold">\\\${t.token}</code>
+                                            <span class="px-2 py-0.5 bg-green-500/20 text-green-400 text-[10px] font-bold uppercase rounded leading-none">\${t.metadata.status}</span>
+                                            <code class="text-indigo-400 font-mono text-xs truncate font-bold">\${t.token}</code>
                                         </div>
-                                        <p class="text-slate-300 font-mono text-sm truncate">\\\${t.metadata.onion_service_id}.onion</p>
-                                        <p class="text-[10px] text-slate-600 font-mono italic">Created: \\\${new Date(t.metadata.created_at * 1000).toLocaleString()}</p>
+                                        <p class="text-slate-300 font-mono text-sm truncate">\${t.metadata.onion_service_id}.onion</p>
+                                        <p class="text-[10px] text-slate-600 font-mono italic">Created: \${new Date(t.metadata.created_at * 1000).toLocaleString()}</p>
                                     </div>
                                     <div class="flex gap-2">
-                                        <button onclick="deleteToken('\\\${t.token}')" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 px-3 py-1.5 rounded text-xs font-bold transition">DELETE</button>
+                                        <button onclick="deleteToken('\${t.token}')" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 px-3 py-1.5 rounded text-xs font-bold transition">DELETE</button>
                                     </div>
                                 </div>
                             \`).join('');
