@@ -282,13 +282,35 @@ if (IS_MASTER) {
                 <main class="max-w-7xl mx-auto px-4 py-8">
                     ${!isAdmin ? `
                     <div class="bg-indigo-600/10 border border-indigo-500/30 p-4 rounded-xl mb-8 flex items-center justify-between">
-                        <div>
+                        <div class="flex-1">
                             <p class="text-[10px] uppercase font-bold text-indigo-400 mb-1">Your Account API Key (Secret)</p>
-                            <code id="api-key" class="text-indigo-200 font-mono text-sm blur-sm hover:blur-none transition cursor-pointer select-all">${apiKey}</code>
+                            <div class="flex items-center space-x-3">
+                                <div class="relative flex items-center bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+                                    <code id="api-key-text" data-key="${apiKey}" class="text-indigo-200 font-mono text-sm" style="-webkit-text-security: disc;">${apiKey}</code>
+                                    <button onclick="toggleApiKey()" class="ml-2 text-slate-500 hover:text-indigo-400 transition" title="Reveal API Key">
+                                        <svg id="eye-icon" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="flex space-x-2">
+                                    <button onclick="copyApiKey()" class="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition" title="Copy to Clipboard">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 012-2v-8a2 2 0 01-2-2h-8a2 2 0 01-2 2v8a2 2 0 012 2z" />
+                                        </svg>
+                                    </button>
+                                    <button onclick="rotateApiKey()" class="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition" title="Rotate/Refresh Key">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                         <div class="text-right">
                             <p class="text-[10px] text-slate-500 uppercase font-bold">CLI Usage</p>
-                            <code class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400">onion-pipe login</code>
+                            <code class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400 font-mono">onion-pipe login</code>
                         </div>
                     </div>
                     ` : ''}
@@ -428,6 +450,31 @@ if (IS_MASTER) {
                         refreshTokens();
                     }
 
+                    function toggleApiKey() {
+                        const el = document.getElementById('api-key-text');
+                        const icon = document.getElementById('eye-icon');
+                        if (el.style.webkitTextSecurity === 'disc') {
+                            el.style.webkitTextSecurity = 'none';
+                            icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a10.017 10.017 0 012.49-4.835m11.24 11.24A9.965 9.965 0 0015 12a3 3 0 11-6 0c0 .408.082.797.23 1.154m6.77 6.77l-6.77-6.77m9.508 9.508l-9.508-9.508" />';
+                        } else {
+                            el.style.webkitTextSecurity = 'disc';
+                            icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />';
+                        }
+                    }
+
+                    function copyApiKey() {
+                        const el = document.getElementById('api-key-text');
+                        const text = el.getAttribute('data-key');
+                        navigator.clipboard.writeText(text);
+                        alert('API Key copied to clipboard!');
+                    }
+
+                    async function rotateApiKey() {
+                        if (!confirm('Are you sure? This will invalidate your current API key and you will need to re-login on your local CLI.')) return;
+                        const res = await fetch('/dashboard/api-key/rotate', { method: 'POST' });
+                        if (res.ok) window.location.reload();
+                    }
+
                     refreshNodes();
                     refreshTokens();
                 </script>
@@ -453,6 +500,15 @@ if (IS_MASTER) {
             const tokens = await redis.getUserTokens(user.id);
             return res.json(tokens);
         }
+    });
+
+    app.post('/dashboard/api-key/rotate', requireAuth, async (req, res) => {
+        const isAdmin = req.cookies.auth_admin === 'true';
+        if (isAdmin) return res.status(400).json({ error: 'Admin has no API key' });
+        
+        const user = req.user as PassportUser;
+        const newKey = await redis.rotateUserApiKey(user.id);
+        res.json({ api_key: newKey });
     });
 
     app.delete('/dashboard/tokens/:token', requireAuth, async (req, res) => {

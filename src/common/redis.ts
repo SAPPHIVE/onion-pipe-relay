@@ -67,6 +67,17 @@ export class RedisService {
         return key;
     }
 
+    async rotateUserApiKey(githubId: string): Promise<string> {
+        const oldKey = await this.client.get(`api_key:${githubId}`);
+        if (oldKey) {
+            await this.client.del(`api_key_owner:${oldKey}`);
+        }
+        const newKey = `op_${uuidv4().replace(/-/g, '')}`;
+        await this.client.set(`api_key:${githubId}`, newKey);
+        await this.client.set(`api_key_owner:${newKey}`, githubId);
+        return newKey;
+    }
+
     async getUserIdByApiKey(apiKey: string): Promise<string | null> {
         return await this.client.get(`api_key_owner:${apiKey}`);
     }
