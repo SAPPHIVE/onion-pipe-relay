@@ -20,6 +20,20 @@ export interface BridgeHeartbeat {
     last_seen: number;
 }
 
+export interface WebAuthnCredential {
+    credentialID: string;
+    publicKey: string; 
+    counter: number;
+    transports?: any[];
+}
+
+export interface UserMfa {
+    totp_enabled: boolean;
+    totp_secret?: string;
+    backup_codes?: string[]; // stored as hashes
+    webauthn_credentials: WebAuthnCredential[];
+}
+
 export class RedisService {
     private client;
 
@@ -162,5 +176,33 @@ export class RedisService {
             }
         }
         return bridges;
+    }
+
+    // --- MFA PERSISTENCE ---
+
+    async getUserMfa(githubId: string): Promise<UserMfa> {
+        const data = await this.client.get(`user_mfa:${githubId}`);
+        if (!data) {
+            return {
+                totp_enabled: false,
+                webauthn_credentials: []
+            };
+        }
+        return JSON.parse(data);
+    }
+
+    async updateUserMfa(githubId: string, mfa: UserMfa) {
+        await this.client.set(`user_mfa:${githubId}`, JSON.stringify(mfa));
+    }
+
+    /**
+     * Stores a temporary WebAuthn challenge for verification
+     */
+    async setWebAuthnChallenge(githubId: string, challenge: string) {
+        await this.client.set(`webauthn_challenge:${githubId}`, challenge, { EX: 300 }); // 5 min
+    }
+
+    async getWebAuthnChallenge(githubId: string): Promise<string | null> {
+        return await this.client.get(`webauthn_challenge:${githubId}`);
     }
 }

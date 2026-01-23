@@ -11,6 +11,9 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import passport from 'passport';
 import { Strategy as GitHubStrategy } from 'passport-github2';
+import { Strategy as LocalStrategy } from 'passport-local';
+import crypto from 'crypto';
+import { setupMfaRoutes } from './mfa';
 
 const logger = pino({ name: 'EntryRelay', transport: { target: 'pino-pretty' }, level: process.env.LOG_LEVEL || 'info' });
 const app = express();
@@ -36,20 +39,60 @@ app.use(cookieParser());
 
 const redis = new RedisService(process.env.REDIS_URL);
 
+// --- SESSION HARDENING ---
+const getFingerprint = (req: Request) => {
+    const ua = req.get('User-Agent') || 'unknown';
+    const ip = (req.headers['x-forwarded-for'] as string || req.ip || 'unknown').split(',')[0].trim();
+    return crypto.createHash('sha256').update(`${ua}|${ip}`).digest('hex');
+};
+
 app.use(session({
     store: new RedisStore({
         client: redis.getClient(),
         prefix: "sess:",
     }),
+    name: process.env.NODE_ENV === 'production' ? '__Host-op-sid' : 'op-sid',
     secret: getSecret('SESSION_SECRET', uuidv4()),
     resave: false,
     saveUninitialized: false,
+    rolling: true,
     cookie: { 
         secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24 * 7 // 1 week
+        sameSite: 'lax',
+        maxAge: 1000 * 60 * 60 * 24 // 1 day (shorter for production)
     }
 }));
+
+// Session Hijacking Protection (Fingerprinting)
+app.use((req, res, next) => {
+    if (req.session) {
+        const currentFingerprint = getFingerprint(req);
+        if (!(req.session as any).fingerprint) {
+            (req.session as any).fingerprint = currentFingerprint;
+        } else if ((req.session as any).fingerprint !== currentFingerprint) {
+            const oldFp = (req.session as any).fingerprint;
+            logger.warn({ 
+                user_id: req.user?.id, 
+                old_fp: oldFp, 
+                new_fp: currentFingerprint,
+                ip: (req.headers['x-forwarded-for'] as string || req.ip || 'unknown'),
+                ua: req.get('User-Agent')
+            }, '⚠️ Session Hijack attempt detected - Fingerprint mismatch');
+            
+            return req.session.destroy(() => {
+                res.clearCookie('op-sid');
+                if (req.xhr || req.path.startsWith('/api/') || (req.headers.accept || '').includes('json')) {
+                    res.status(401).json({ error: 'Session invalidated. Please login again.' });
+                } else {
+                    res.redirect('/login?error=hijack');
+                }
+            });
+        }
+    }
+    next();
+});
+
 app.use(passport.initialize());
 app.use(passport.session());
 
@@ -67,6 +110,18 @@ passport.deserializeUser((user: any, done) => done(null, user));
 if (IS_MASTER) {
     const githubClientId = getSecret('GITHUB_CLIENT_ID');
     const githubClientSecret = getSecret('GITHUB_CLIENT_SECRET');
+
+    // Admin Local Strategy
+    passport.use(new LocalStrategy((username, password, done) => {
+        if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
+            return done(null, {
+                id: 'admin',
+                username: 'Super Admin',
+                isAdmin: true
+            });
+        }
+        return done(null, false, { message: 'Invalid credentials' });
+    }));
 
     if (githubClientId && githubClientSecret) {
         logger.info('🔑 GitHub OAuth Strategy initialized');
@@ -86,12 +141,110 @@ if (IS_MASTER) {
     }
 }
 
-const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    if (req.isAuthenticated() || req.cookies.auth_admin === 'true') {
+const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
+    if (req.isAuthenticated() && req.user) {
+        const mfa = await redis.getUserMfa(req.user.id);
+        const needsMfa = mfa.totp_enabled || mfa.webauthn_credentials.length > 0;
+        
+        if (needsMfa && !(req.session as any).mfa_verified) {
+            const isApi = req.xhr || req.headers.accept?.includes('application/json') || req.path.startsWith('/api/') || req.path.includes('/tokens') || req.path.includes('/nodes');
+            if (isApi) {
+                return res.status(403).json({ error: 'MFA_REQUIRED', message: 'MFA verification required' });
+            }
+            return res.status(401).redirect('/mfa-challenge');
+        }
         return next();
+    }
+    
+    const isApi = req.xhr || req.headers.accept?.includes('application/json') || req.path.startsWith('/api/') || req.path.includes('/tokens') || req.path.includes('/nodes');
+    if (isApi) {
+        return res.status(401).json({ error: 'UNAUTHORIZED' });
     }
     res.redirect('/login');
 };
+
+app.get('/mfa-challenge', (req, res) => {
+    if (!req.isAuthenticated()) return res.redirect('/login');
+    res.send(`
+        <html>
+        <head>
+            <title>MFA Challenge | Onion-Pipe</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
+            <div class="max-w-sm w-full bg-slate-900 p-8 rounded-2xl shadow-2xl border border-slate-800 text-center">
+                <h1 class="text-2xl font-bold mb-6">Multi-Factor Auth</h1>
+                <p class="text-slate-400 text-sm mb-8">Verification required to access your account.</p>
+                
+                <div id="mfa-options" class="space-y-4">
+                    <button id="use-passkey" class="hidden w-full bg-indigo-600 hover:bg-indigo-500 py-3 rounded-lg font-bold transition">
+                        Authenticate with Passkey
+                    </button>
+                    
+                    <div id="totp-input" class="hidden">
+                        <input type="text" id="otp-code" placeholder="6-digit code" maxlength="6" 
+                            class="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-center text-2xl font-mono tracking-widest outline-none focus:ring-2 focus:ring-indigo-500 mb-4">
+                        <button onclick="verifyTotp()" class="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-lg font-bold border border-slate-700 transition">
+                            Verify TOTP
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
+            <script>
+                const { startAuthentication } = SimpleWebAuthnBrowser;
+
+                async function checkMfa() {
+                    const res = await fetch('/api/mfa/status');
+                    const status = await res.json();
+                    
+                    if (status.webauthn) {
+                        document.getElementById('use-passkey').classList.remove('hidden');
+                        document.getElementById('use-passkey').onclick = verifyPasskey;
+                    }
+                    if (status.totp) {
+                        document.getElementById('totp-input').classList.remove('hidden');
+                    }
+                }
+
+                async function verifyPasskey() {
+                    try {
+                        const optRes = await fetch('/api/mfa/webauthn/login/options', { method: 'POST' });
+                        const options = await optRes.json();
+                        const assertion = await startAuthentication(options);
+                        
+                        const verifyRes = await fetch('/api/mfa/webauthn/login/verify', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(assertion)
+                        });
+                        
+                        if ((await verifyRes.json()).verified) window.location.href = '/dashboard';
+                        else alert('Authentication failed');
+                    } catch (err) {
+                        console.error(err);
+                        alert(err.message);
+                    }
+                }
+
+                async function verifyTotp() {
+                    const code = document.getElementById('otp-code').value;
+                    const res = await fetch('/api/mfa/totp/verify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code })
+                    });
+                    if (res.ok) window.location.href = '/dashboard';
+                    else alert('Invalid code');
+                }
+
+                checkMfa();
+            </script>
+        </body>
+        </html>
+    `);
+});
 
 const bodyLogger = (req: Request, res: Response, next: NextFunction) => {
     if (IS_MASTER) logger.debug({ path: req.path }, 'Request received');
@@ -105,7 +258,7 @@ if (IS_MASTER) {
     logger.info('👑 Master Mode Enabled: Dashboard active at /dashboard');
 
     app.get('/', (req, res) => {
-        const loggedIn = req.isAuthenticated() || req.cookies.auth_admin === 'true';
+        const loggedIn = req.isAuthenticated();
         res.send(`
             <html>
             <head>
@@ -148,7 +301,7 @@ if (IS_MASTER) {
     });
 
     app.get('/login', (req, res) => {
-        if (req.isAuthenticated() || req.cookies.auth_admin === 'true') return res.redirect('/dashboard');
+        if (req.isAuthenticated()) return res.redirect('/dashboard');
         res.send(`
             <html>
             <head>
@@ -196,18 +349,37 @@ if (IS_MASTER) {
 
     app.get('/auth/github/callback', 
         passport.authenticate('github', { failureRedirect: '/login' }),
-        (req, res) => {
+        async (req, res) => {
             const isCli = (req.session as any).isCliAuth;
             if (isCli) {
                 delete (req.session as any).isCliAuth;
                 return res.redirect('/cli-auth');
             }
+
+            // Check if MFA is required
+            if (req.user) {
+                const mfa = await redis.getUserMfa(req.user.id);
+                if (mfa.totp_enabled || mfa.webauthn_credentials.length > 0) {
+                    return res.redirect('/mfa-challenge');
+                }
+            }
+
             res.redirect('/dashboard');
         }
     );
 
+    app.get('/logout', (req, res) => {
+        req.session.destroy(() => {
+            res.clearCookie('op-sid');
+            res.clearCookie('auth_admin');
+            res.redirect('/');
+        });
+    });
+
+    app.use('/api/mfa', setupMfaRoutes(redis));
+
     app.get('/cli-auth', requireAuth, async (req, res) => {
-        const isAdmin = req.cookies.auth_admin === 'true';
+        const isAdmin = req.user?.isAdmin;
         if (isAdmin) return res.send("Admin cannot use CLI auth codes.");
         
         const user = req.user as PassportUser;
@@ -248,23 +420,29 @@ if (IS_MASTER) {
         res.json({ api_key: apiKey });
     });
 
-    app.post('/login', (req, res) => {
-        if (req.body.username === ADMIN_USER && req.body.password === ADMIN_PASSWORD) {
-            res.cookie('auth_admin', 'true', { httpOnly: true, secure: true, sameSite: 'strict' });
-            return res.redirect('/dashboard');
+    app.post('/login', 
+        passport.authenticate('local', { failureRedirect: '/login?error=1' }),
+        async (req, res) => {
+            // Check if MFA is required for admin
+            if (req.user) {
+                const mfa = await redis.getUserMfa(req.user.id);
+                if (mfa.totp_enabled || mfa.webauthn_credentials.length > 0) {
+                    return res.redirect('/mfa-challenge');
+                }
+            }
+            res.redirect('/dashboard');
         }
-        res.redirect('/login?error=1');
-    });
+    );
 
     app.get('/logout', (req, res) => {
         req.logout(() => {
-            res.clearCookie('auth_admin');
+            res.clearCookie('op-sid');
             res.redirect('/');
         });
     });
     
     app.get('/dashboard', requireAuth, async (req, res) => {
-        const isAdmin = req.cookies.auth_admin === 'true';
+        const isAdmin = req.user?.isAdmin;
         const user = req.user as PassportUser;
         const username = isAdmin ? 'Super Admin' : user.username;
         const apiKey = !isAdmin ? await redis.getOrCreateUserApiKey(user.id) : null;
@@ -276,7 +454,7 @@ if (IS_MASTER) {
                 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
-            <body class="bg-slate-950 text-slate-100 font-sans">
+            <body class="bg-slate-950 text-slate-100 font-sans" data-is-admin="${isAdmin}">
                 <nav class="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
                     <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
                         <div class="flex items-center space-x-2">
@@ -298,7 +476,7 @@ if (IS_MASTER) {
                             <div class="flex items-center space-x-3">
                                 <div class="relative flex items-center bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
                                     <code id="api-key-text" data-key="${apiKey}" class="text-indigo-200 font-mono text-sm" style="-webkit-text-security: disc;">${apiKey}</code>
-                                    <button onclick="toggleApiKey()" class="ml-2 text-slate-500 hover:text-indigo-400 transition" title="Reveal API Key">
+                                    <button onclick="window.toggleApiKey()" class="ml-2 text-slate-500 hover:text-indigo-400 transition" title="Reveal API Key">
                                         <svg id="eye-icon" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -306,12 +484,12 @@ if (IS_MASTER) {
                                     </button>
                                 </div>
                                 <div class="flex space-x-2">
-                                    <button onclick="copyApiKey()" class="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition" title="Copy to Clipboard">
+                                    <button onclick="window.copyApiKey()" class="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition" title="Copy to Clipboard">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 012-2v-8a2 2 0 01-2-2h-8a2 2 0 01-2 2v8a2 2 0 012 2z" />
                                         </svg>
                                     </button>
-                                    <button onclick="rotateApiKey()" class="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition" title="Rotate/Refresh Key">
+                                    <button onclick="window.rotateApiKey()" class="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition" title="Rotate/Refresh Key">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                                         </svg>
@@ -341,11 +519,55 @@ if (IS_MASTER) {
                         </div>
                     </div>
 
+                    <!-- MFA Settings (Global) -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-8">
+                        <div class="px-6 py-4 border-b border-slate-800 bg-emerald-500/5">
+                            <h2 class="font-bold text-lg">Identity Security (MFA)</h2>
+                        </div>
+                        <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <!-- WebAuthn -->
+                            <div class="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h3 class="font-bold text-indigo-400">Passkeys</h3>
+                                    <span id="passkey-status" class="text-[10px] uppercase font-bold px-2 py-0.5 rounded">Checking...</span>
+                                </div>
+                                <p class="text-xs text-slate-500 mb-4 h-8">Use Windows Hello, FaceID, or physical security keys.</p>
+                                <button onclick="window.setupPasskey()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition">Register New Passkey</button>
+                            </div>
+
+                            <!-- TOTP -->
+                            <div class="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h3 class="font-bold text-indigo-400">Authenticator App</h3>
+                                    <span id="totp-status" class="text-[10px] uppercase font-bold px-2 py-0.5 rounded">Checking...</span>
+                                </div>
+                                <p class="text-xs text-slate-500 mb-4 h-8">Use apps like Google Authenticator or Authy.</p>
+                                <div id="totp-actions">
+                                    <button onclick="window.setupTotp()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition">Setup TOTP</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TOTP Setup Modal -->
+                    <div id="totp-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                        <div class="bg-slate-900 border border-slate-800 p-8 rounded-2xl max-w-sm w-full text-center">
+                            <h3 class="text-xl font-bold mb-4">Setup Authenticator</h3>
+                            <div id="qrcode-container" class="bg-white p-4 rounded-xl inline-block mb-4"></div>
+                            <p class="text-xs text-slate-400 mb-6">Scan this QR code with your app, then enter the 6-digit code below.</p>
+                            <input type="text" id="setup-otp" placeholder="000 000" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-center text-2xl font-mono tracking-widest outline-none focus:ring-2 focus:ring-indigo-500 mb-4">
+                            <div class="flex space-x-3">
+                                <button onclick="window.closeTotpModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 py-2 rounded-lg text-sm font-bold transition">Cancel</button>
+                                <button onclick="window.verifySetupTotp()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 py-2 rounded-lg text-sm font-bold transition">Verify</button>
+                            </div>
+                        </div>
+                    </div>
+
                     ${isAdmin ? `
                     <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-8">
                         <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-indigo-500/5">
                             <h2 class="font-bold text-lg">Infrastructure Telemetry (Admin Only)</h2>
-                            <button onclick="refreshNodes()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Bridges</button>
+                            <button onclick="window.refreshNodes()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Bridges</button>
                         </div>
                         <div class="p-6">
                             <pre id="nodes" class="bg-slate-950 p-4 rounded-xl border border-slate-800 overflow-x-auto text-indigo-400 text-sm font-mono min-h-[100px]">Loading bridge telemetry...</pre>
@@ -357,8 +579,8 @@ if (IS_MASTER) {
                         <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
                             <h2 class="font-bold text-lg">${isAdmin ? 'All Registered Hooks' : 'Your Managed Hooks'}</h2>
                             <div class="flex space-x-2">
-                                ${!isAdmin ? `<button onclick="showAddHook()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">+ Add New Hook</button>` : ''}
-                                <button onclick="refreshTokens()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Hooks</button>
+                                ${!isAdmin ? `<button onclick="window.showAddHook()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">+ Add New Hook</button>` : ''}
+                                <button onclick="window.refreshTokens()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Hooks</button>
                             </div>
                         </div>
 
@@ -376,8 +598,8 @@ if (IS_MASTER) {
                                 </div>
                             </div>
                             <div class="mt-4 flex justify-end space-x-3">
-                                <button onclick="showAddHook(false)" class="text-xs text-slate-400 hover:text-white transition">Cancel</button>
-                                <button onclick="submitNewHook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-xs font-bold transition">Create Hook</button>
+                                <button onclick="window.showAddHook(false)" class="text-xs text-slate-400 hover:text-white transition">Cancel</button>
+                                <button onclick="window.submitNewHook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-xs font-bold transition">Create Hook</button>
                             </div>
                         </div>
 
@@ -389,105 +611,142 @@ if (IS_MASTER) {
                     </div>
                 </main>
 
+                <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
                 <script>
-                    function showAddHook(show = true) {
-                        document.getElementById('add-hook-form').classList.toggle('hidden', !show);
-                    }
+                    (function() {
+                        const { startRegistration } = window.SimpleWebAuthnBrowser || {};
+                        const isAdmin = document.body.dataset.isAdmin === 'true';
 
-                    async function submitNewHook() {
-                        const onion = document.getElementById('new-onion').value.trim();
-                        const pubkey = document.getElementById('new-pubkey').value.trim();
-                        if (!onion || !pubkey) return alert('Please fill all fields');
+                        window.refreshMfaStatus = async function() {
+                            try {
+                                const res = await fetch('/api/mfa/status');
+                                const data = await res.json();
+                                const pk = document.getElementById('passkey-status');
+                                const tp = document.getElementById('totp-status');
+                                if (pk) pk.innerText = data.webauthn ? 'ACTIVE' : 'NOT SET';
+                                if (tp) tp.innerText = data.totp ? 'ENABLED' : 'DISABLED';
+                            } catch (e) { console.error(e); }
+                        };
 
-                        try {
+                        window.setupPasskey = async function() {
+                            if (!startRegistration) return alert('WebAuthn failed to load');
+                            try {
+                                const res = await fetch('/api/mfa/webauthn/register/options', { method: 'POST' });
+                                const options = await res.json();
+                                const attestation = await startRegistration(options);
+                                await fetch('/api/mfa/webauthn/register/verify', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(attestation)
+                                });
+                                alert('Passkey registered!');
+                                window.refreshMfaStatus();
+                            } catch (e) { alert(e.message); }
+                        };
+
+                        window.setupTotp = async function() {
+                            const res = await fetch('/api/mfa/totp/setup', { method: 'POST' });
+                            const data = await res.json();
+                            document.getElementById('qrcode-container').innerHTML = '<img src="' + data.qr + '" class="w-48 h-48 mx-auto">';
+                            document.getElementById('totp-modal').classList.remove('hidden');
+                        };
+
+                        window.closeTotpModal = function() { document.getElementById('totp-modal').classList.add('hidden'); };
+
+                        window.verifySetupTotp = async function() {
+                            const code = document.getElementById('setup-otp').value;
+                            const res = await fetch('/api/mfa/totp/verify', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ code, isSetup: true })
+                            });
+                            const data = await res.json();
+                            if (data.verified) {
+                                alert('TOTP enabled!');
+                                window.closeTotpModal();
+                                window.refreshMfaStatus();
+                            } else alert('Invalid code');
+                        };
+
+                        window.refreshNodes = async function() {
+                            const pre = document.getElementById('nodes');
+                            if (!pre) return;
+                            try {
+                                const res = await fetch('/dashboard/nodes');
+                                const data = await res.json();
+                                pre.innerText = JSON.stringify(data, null, 2);
+                            } catch (e) { pre.innerText = "Error: " + e.message; }
+                        };
+
+                        window.refreshTokens = async function() {
+                            const list = document.getElementById('tokens-list');
+                            if (!list) return;
+                            try {
+                                const res = await fetch('/dashboard/tokens');
+                                const data = await res.json();
+                                if (!data.length) {
+                                    list.innerHTML = '<p class="text-center py-10 text-slate-500">No hooks found.</p>';
+                                    return;
+                                }
+                                list.innerHTML = data.map(t => \`
+                                    <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center bg-slate-900/40">
+                                        <div>
+                                            <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
+                                            <p class="text-slate-300 text-sm italic">\${t.metadata?.onion_service_id}.onion</p>
+                                        </div>
+                                        <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-xs font-bold hover:bg-red-500/10 px-2 py-1 rounded transition">DELETE</button>
+                                    </div>
+                                \`).join('');
+                            } catch (e) { list.innerText = "Error: " + e.message; }
+                        };
+
+                        window.deleteToken = async function(token) {
+                            if (!confirm('Delete?')) return;
+                            await fetch('/dashboard/tokens/' + token, { method: 'DELETE' });
+                            window.refreshTokens();
+                        };
+
+                        window.toggleApiKey = function() {
+                            const el = document.getElementById('api-key-text');
+                            el.style.webkitTextSecurity = el.style.webkitTextSecurity === 'disc' ? 'none' : 'disc';
+                        };
+
+                        window.copyApiKey = function() {
+                            navigator.clipboard.writeText(document.getElementById('api-key-text').getAttribute('data-key'));
+                            alert('Copied!');
+                        };
+
+                        window.rotateApiKey = async function() {
+                            if (!confirm('Rotate?')) return;
+                            await fetch('/dashboard/api-key/rotate', { method: 'POST' });
+                            window.location.reload();
+                        };
+
+                        window.showAddHook = function(show = true) {
+                            document.getElementById('add-hook-form').classList.toggle('hidden', !show);
+                        };
+
+                        window.submitNewHook = async function() {
+                            const onion = document.getElementById('new-onion').value.trim();
+                            const pubkey = document.getElementById('new-pubkey').value.trim();
+                            if (!onion || !pubkey) return alert('Please fill all fields');
                             const res = await fetch('/register', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ 
-                                    onion_service_id: onion.replace('.onion', ''),
-                                    public_key: pubkey
-                                })
+                                body: JSON.stringify({ onion_service_id: onion.replace('.onion', ''), public_key: pubkey })
                             });
-                            if (!res.ok) throw new Error('Failed to register');
-                            const data = await res.json();
-                            alert('Hook created successfully! Token: ' + data.token);
-                            showAddHook(false);
-                            document.getElementById('new-onion').value = '';
-                            document.getElementById('new-pubkey').value = '';
-                            refreshTokens();
-                        } catch (e) { alert(e.message); }
-                    }
-
-                    async function refreshNodes() {
-                        const pre = document.getElementById('nodes');
-                        if (!pre) return;
-                        try {
-                            const res = await fetch('/dashboard/nodes');
-                            const data = await res.json();
-                            pre.innerText = data.length ? JSON.stringify(data, null, 2) : "No external bridges.";
-                        } catch (e) { pre.innerText = "Error."; }
-                    }
-
-                    async function refreshTokens() {
-                        const list = document.getElementById('tokens-list');
-                        try {
-                            const res = await fetch('/dashboard/tokens');
-                            const data = await res.json();
-                            if (data.length === 0) {
-                                list.innerHTML = '<div class="text-center py-10 border-2 border-dashed border-slate-800 rounded-xl text-slate-500">No hooks registered. Use the CLI to register a service.</div>';
-                                return;
+                            if (res.ok) {
+                                alert('Registered!');
+                                window.showAddHook(false);
+                                window.refreshTokens();
                             }
-                            list.innerHTML = data.map(t => \`
-                                <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                                    <div class="flex-1 min-w-0">
-                                        <div class="flex items-center space-x-2 mb-1">
-                                            <span class="px-2 py-0.5 bg-green-500/20 text-green-400 text-[10px] font-bold uppercase rounded leading-none">\${t.metadata.status}</span>
-                                            <code class="text-indigo-400 font-mono text-xs truncate font-bold">\${t.token}</code>
-                                        </div>
-                                        <p class="text-slate-300 font-mono text-sm truncate">\${t.metadata.onion_service_id}.onion</p>
-                                        <p class="text-[10px] text-slate-600 font-mono italic">Created: \${new Date(t.metadata.created_at * 1000).toLocaleString()}</p>
-                                    </div>
-                                    <div class="flex gap-2">
-                                        <button onclick="deleteToken('\${t.token}')" class="bg-red-500/10 hover:bg-red-500/20 text-red-500 px-3 py-1.5 rounded text-xs font-bold transition">DELETE</button>
-                                    </div>
-                                </div>
-                            \`).join('');
-                        } catch (e) { list.innerHTML = 'Failed to load.'; }
-                    }
+                        };
 
-                    async function deleteToken(token) {
-                        if (!confirm('Are you sure you want to delete this mapping?')) return;
-                        await fetch('/dashboard/tokens/' + token, { method: 'DELETE' });
-                        refreshTokens();
-                    }
-
-                    function toggleApiKey() {
-                        const el = document.getElementById('api-key-text');
-                        const icon = document.getElementById('eye-icon');
-                        if (el.style.webkitTextSecurity === 'disc') {
-                            el.style.webkitTextSecurity = 'none';
-                            icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a10.017 10.017 0 012.49-4.835m11.24 11.24A9.965 9.965 0 0015 12a3 3 0 11-6 0c0 .408.082.797.23 1.154m6.77 6.77l-6.77-6.77m9.508 9.508l-9.508-9.508" />';
-                        } else {
-                            el.style.webkitTextSecurity = 'disc';
-                            icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />';
-                        }
-                    }
-
-                    function copyApiKey() {
-                        const el = document.getElementById('api-key-text');
-                        const text = el.getAttribute('data-key');
-                        navigator.clipboard.writeText(text);
-                        alert('API Key copied to clipboard!');
-                    }
-
-                    async function rotateApiKey() {
-                        if (!confirm('Are you sure? This will invalidate your current API key and you will need to re-login on your local CLI.')) return;
-                        const res = await fetch('/dashboard/api-key/rotate', { method: 'POST' });
-                        if (res.ok) window.location.reload();
-                    }
-
-                    refreshNodes();
-                    refreshTokens();
+                        // Initialize
+                        window.refreshMfaStatus();
+                        window.refreshTokens();
+                        if (isAdmin) window.refreshNodes();
+                    })();
                 </script>
             </body>
             </html>
@@ -495,13 +754,13 @@ if (IS_MASTER) {
     });
 
     app.get('/dashboard/nodes', requireAuth, async (req, res) => {
-        if (req.cookies.auth_admin !== 'true') return res.status(401).json({ error: 'Admin only' });
+        if (!req.user?.isAdmin) return res.status(401).json({ error: 'Admin only' });
         const bridges = await redis.getHealthyBridges();
         res.json(bridges);
     });
 
     app.get('/dashboard/tokens', requireAuth, async (req, res) => {
-        const isAdmin = req.cookies.auth_admin === 'true';
+        const isAdmin = req.user?.isAdmin;
         const user = req.user as PassportUser;
         
         if (isAdmin) {
@@ -514,7 +773,7 @@ if (IS_MASTER) {
     });
 
     app.post('/dashboard/api-key/rotate', requireAuth, async (req, res) => {
-        const isAdmin = req.cookies.auth_admin === 'true';
+        const isAdmin = req.user?.isAdmin;
         if (isAdmin) return res.status(400).json({ error: 'Admin has no API key' });
         
         const user = req.user as PassportUser;
@@ -523,7 +782,7 @@ if (IS_MASTER) {
     });
 
     app.delete('/dashboard/tokens/:token', requireAuth, async (req, res) => {
-        const isAdmin = req.cookies.auth_admin === 'true';
+        const isAdmin = req.user?.isAdmin;
         const token = req.params.token as string;
         
         if (isAdmin) {
