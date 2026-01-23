@@ -183,8 +183,9 @@ app.get('/mfa-challenge', (req, res) => {
                     
                     <div id="totp-input" class="hidden">
                         <input type="text" id="otp-code" placeholder="6-digit code" maxlength="6" 
+                            onkeyup="if(event.key==='Enter') window.verifyTotp()"
                             class="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-center text-2xl font-mono tracking-widest outline-none focus:ring-2 focus:ring-indigo-500 mb-4">
-                        <button onclick="verifyTotp()" class="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-lg font-bold border border-slate-700 transition">
+                        <button onclick="window.verifyTotp()" class="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-lg font-bold border border-slate-700 transition">
                             Verify TOTP
                         </button>
                     </div>
@@ -358,6 +359,13 @@ if (IS_MASTER) {
 
             // Check if MFA is required
             if (req.user) {
+                // EMERGENCY BYPASS FOR LOCKOUT (Temporary)
+                if (req.user.id === 'admin' && process.env.BYPASS_ADMIN_MFA === 'true') {
+                    console.warn("⚠️ EMERGENCY: Bypassing MFA for admin due to BYPASS_ADMIN_MFA=true");
+                    (req.session as any).mfa_verified = true;
+                    return res.redirect('/dashboard');
+                }
+
                 const mfa = await redis.getUserMfa(req.user.id);
                 if (mfa.totp_enabled || mfa.webauthn_credentials.length > 0) {
                     return res.redirect('/mfa-challenge');
@@ -425,6 +433,13 @@ if (IS_MASTER) {
         async (req, res) => {
             // Check if MFA is required for admin
             if (req.user) {
+                // EMERGENCY BYPASS FOR LOCKOUT (Temporary)
+                if (req.user.id === 'admin' && process.env.BYPASS_ADMIN_MFA === 'true') {
+                    console.warn("⚠️ EMERGENCY: Bypassing MFA for admin due to BYPASS_ADMIN_MFA=true");
+                    (req.session as any).mfa_verified = true;
+                    return res.redirect('/dashboard');
+                }
+
                 const mfa = await redis.getUserMfa(req.user.id);
                 if (mfa.totp_enabled || mfa.webauthn_credentials.length > 0) {
                     return res.redirect('/mfa-challenge');
@@ -531,8 +546,9 @@ if (IS_MASTER) {
                                     <h3 class="font-bold text-indigo-400">Passkeys</h3>
                                     <span id="passkey-status" class="text-[10px] uppercase font-bold px-2 py-0.5 rounded">Checking...</span>
                                 </div>
-                                <p class="text-xs text-slate-500 mb-4 h-8">Use Windows Hello, FaceID, or physical security keys.</p>
-                                <button onclick="window.setupPasskey()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition">Register New Passkey</button>
+                                <div id="passkey-actions">
+                                    <button onclick="window.setupPasskey()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition mb-2">Register New Passkey</button>
+                                </div>
                             </div>
 
                             <!-- TOTP -->
@@ -555,7 +571,9 @@ if (IS_MASTER) {
                             <h3 class="text-xl font-bold mb-4">Setup Authenticator</h3>
                             <div id="qrcode-container" class="bg-white p-4 rounded-xl inline-block mb-4"></div>
                             <p class="text-xs text-slate-400 mb-6">Scan this QR code with your app, then enter the 6-digit code below.</p>
-                            <input type="text" id="setup-otp" placeholder="000 000" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-center text-2xl font-mono tracking-widest outline-none focus:ring-2 focus:ring-indigo-500 mb-4">
+                            <input type="text" id="setup-otp" placeholder="000 000" 
+                                onkeyup="if(event.key==='Enter') window.verifySetupTotp()"
+                                class="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-center text-2xl font-mono tracking-widest outline-none focus:ring-2 focus:ring-indigo-500 mb-4">
                             <div class="flex space-x-3">
                                 <button onclick="window.closeTotpModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 py-2 rounded-lg text-sm font-bold transition">Cancel</button>
                                 <button onclick="window.verifySetupTotp()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 py-2 rounded-lg text-sm font-bold transition">Verify</button>
@@ -625,7 +643,34 @@ if (IS_MASTER) {
                                 const tp = document.getElementById('totp-status');
                                 if (pk) pk.innerText = data.webauthn ? 'ACTIVE' : 'NOT SET';
                                 if (tp) tp.innerText = data.totp ? 'ENABLED' : 'DISABLED';
+
+                                const pkActions = document.getElementById('passkey-actions');
+                                if (pkActions) {
+                                    pkActions.innerHTML = \`
+                                        <button onclick="window.setupPasskey()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition mb-2">Register New Passkey</button>
+                                        \${data.webauthn ? \`<button onclick="window.disablePasskey()" class="w-full text-red-500/50 hover:text-red-500 py-1 text-[10px] font-bold transition">Clear All Passkeys</button>\` : ''}
+                                    \`;
+                                }
+
+                                const tpActions = document.getElementById('totp-actions');
+                                if (tpActions) {
+                                    tpActions.innerHTML = data.totp 
+                                        ? \`<button onclick="window.disableTotp()" class="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 py-2 rounded-lg text-xs font-bold transition">Disable Authenticator</button>\`
+                                        : \`<button onclick="window.setupTotp()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition">Setup TOTP</button>\`;
+                                }
                             } catch (e) { console.error(e); }
+                        };
+
+                        window.disableTotp = async function() {
+                            if (!confirm('Disable Authenticator App?')) return;
+                            await fetch('/api/mfa/totp/disable', { method: 'POST' });
+                            window.refreshMfaStatus();
+                        };
+
+                        window.disablePasskey = async function() {
+                            if (!confirm('Clear all registered Passkeys?')) return;
+                            await fetch('/api/mfa/webauthn/disable', { method: 'POST' });
+                            window.refreshMfaStatus();
                         };
 
                         window.setupPasskey = async function() {

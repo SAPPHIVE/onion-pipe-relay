@@ -38,7 +38,7 @@ export function setupMfaRoutes(redis: RedisService) {
             userName: req.user.username,
             attestationType: 'none',
             excludeCredentials: mfa.webauthn_credentials.map(cred => ({
-                id: cred.credentialID,
+                id: cred.credentialID, // Already base64 or base64url string in DB
                 type: 'public-key',
             })),
             authenticatorSelection: {
@@ -65,8 +65,12 @@ export function setupMfaRoutes(redis: RedisService) {
             if (verification.verified && verification.registrationInfo) {
                 const { credential } = verification.registrationInfo;
                 const mfa = await redis.getUserMfa(req.user.id);
+                
+                // Store as standard base64 for maximum compatibility
+                const credentialID = Buffer.from(credential.id).toString('base64');
+                
                 mfa.webauthn_credentials.push({
-                    credentialID: Buffer.from(credential.id).toString('base64'),
+                    credentialID,
                     publicKey: Buffer.from(credential.publicKey).toString('base64'),
                     counter: credential.counter,
                     transports: body.response.transports,
@@ -88,13 +92,22 @@ export function setupMfaRoutes(redis: RedisService) {
             rpID: RP_ID,
             allowCredentials: mfa.webauthn_credentials.map(cred => ({
                 id: cred.credentialID,
-                type: 'public-key',
                 transports: cred.transports as any,
             })),
             userVerification: 'preferred',
         });
         await redis.setWebAuthnChallenge(req.user.id, options.challenge);
-        res.json(options);
+        
+        // Manual conversion of Uint8Arrays/Buffers to base64url strings for the browser
+        const responseOptions = {
+            ...options,
+            allowCredentials: options.allowCredentials?.map(cred => ({
+                ...cred,
+                id: typeof cred.id === 'string' ? cred.id : Buffer.from(cred.id).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+            }))
+        };
+        
+        res.json(responseOptions);
     });
 
     router.post('/webauthn/login/verify', async (req, res) => {
@@ -102,8 +115,13 @@ export function setupMfaRoutes(redis: RedisService) {
         const { body } = req;
         const mfa = await redis.getUserMfa(req.user.id);
         const expectedChallenge = await redis.getWebAuthnChallenge(req.user.id);
-        const dbCred = mfa.webauthn_credentials.find(c => c.credentialID === body.id);
-        if (!dbCred || !expectedChallenge) return res.status(400).json({ error: 'Invalid challenge' });
+        
+        // Robust ID matching: handle base64, base64url and various encodings
+        const normalize = (id: string) => id.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        const targetId = normalize(body.id);
+        const dbCred = mfa.webauthn_credentials.find(c => normalize(c.credentialID) === targetId);
+
+        if (!dbCred || !expectedChallenge) return res.status(400).json({ error: 'Invalid challenge or unknown credential' });
         try {
             const verification = await verifyAuthenticationResponse({
                 response: body,
@@ -165,6 +183,14 @@ export function setupMfaRoutes(redis: RedisService) {
         const mfa = await redis.getUserMfa(req.user.id);
         mfa.totp_enabled = false;
         mfa.totp_secret = undefined;
+        await redis.updateUserMfa(req.user.id, mfa);
+        res.json({ success: true });
+    });
+
+    router.post('/webauthn/disable', async (req, res) => {
+        if (!req.isAuthenticated()) return res.status(401).send('Unauthorized');
+        const mfa = await redis.getUserMfa(req.user.id);
+        mfa.webauthn_credentials = [];
         await redis.updateUserMfa(req.user.id, mfa);
         res.json({ success: true });
     });

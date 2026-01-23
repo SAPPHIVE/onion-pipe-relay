@@ -34,6 +34,7 @@ services:
       - SESSION_SECRET_FILE=/run/secrets/session_secret
       - REDIS_PASSWORD_FILE=/run/secrets/redis_password
       - PUBLIC_RELAY_URL=${PUBLIC_RELAY_URL}
+      # - BYPASS_ADMIN_MFA=true
       # - REGISTRATION_SECRET_FILE=/run/secrets/registration_secret
     secrets:
       - admin_user
