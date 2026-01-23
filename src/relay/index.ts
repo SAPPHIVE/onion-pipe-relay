@@ -220,19 +220,8 @@ app.get('/mfa-challenge', (req, res) => {
                         
                         if (!startAuthentication) throw new Error('WebAuthn Browser library not loaded');
                         
-                        // Defensive call: some versions of simplewebauthn/browser might 
-                        // have different expectations for the options object structure.
-                        let assertion;
-                        try {
-                            assertion = await startAuthentication(options);
-                        } catch (e) {
-                            if (e.name === 'TypeError' && options.publicKey) {
-                                console.warn('Retrying startAuthentication with unwrapped publicKey');
-                                assertion = await startAuthentication(options.publicKey);
-                            } else {
-                                throw e;
-                            }
-                        }
+                        // Fix: Use optionsJSON as per SimpleWebAuthn v11+ docs
+                        const assertion = await startAuthentication({ optionsJSON: options });
                         
                         console.log('Assertion created:', assertion);
                         
@@ -703,7 +692,10 @@ if (IS_MASTER) {
                             try {
                                 const res = await fetch('/api/mfa/webauthn/register/options', { method: 'POST' });
                                 const options = await res.json();
-                                const attestation = await startRegistration(options);
+                                
+                                // Fix: Use optionsJSON as per SimpleWebAuthn v11+ docs
+                                const attestation = await startRegistration({ optionsJSON: options });
+                                
                                 await fetch('/api/mfa/webauthn/register/verify', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },

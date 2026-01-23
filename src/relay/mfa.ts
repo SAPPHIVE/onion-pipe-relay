@@ -56,13 +56,15 @@ export function setupMfaRoutes(redis: RedisService) {
                 type: 'public-key',
             })),
             authenticatorSelection: {
-                residentKey: 'preferred', // 'preferred' is less likely to hit device-specific errors than 'required'
+                residentKey: 'preferred', // 'preferred' is more compatible across all Windows versions
                 userVerification: 'preferred',
+                // authenticatorAttachment: 'platform', // Removed to allow Cross-Platform (Security Keys, Android) as well
             },
         });
         await redis.setWebAuthnChallenge(req.user.id, options.challenge);
         
-        // Final pass to ensure all fields are browser-ready JSON strings
+        // Return the exact object but ensure binary fields are base64url strings.
+        // We avoid JSON.parse/stringify logic to prevent property ordering or type issues.
         const responseOptions = {
             ...options,
             challenge: toBase64Url(options.challenge),
@@ -95,8 +97,9 @@ export function setupMfaRoutes(redis: RedisService) {
                 const { credential } = verification.registrationInfo;
                 const mfa = await redis.getUserMfa(req.user.id);
                 
-                // Store as base64url for direct compatibility with WebAuthn lib
-                const credentialID = Buffer.from(credential.id).toString('base64url');
+                // Fix: credential.id is already a base64url string from the library.
+                // Do NOT re-encode it, or the browser will look for the wrong ID later.
+                const credentialID = credential.id; 
                 
                 mfa.webauthn_credentials.push({
                     credentialID,
@@ -122,13 +125,13 @@ export function setupMfaRoutes(redis: RedisService) {
             allowCredentials: mfa.webauthn_credentials.map(cred => ({
                 id: toBase64Url(cred.credentialID),
                 type: 'public-key',
-                transports: cred.transports, // Pass back stored transports if available
+                // REMOVED 'transports' to prevent browser-side filtering that causes "No passkeys available"
             })),
             userVerification: 'preferred',
         });
         await redis.setWebAuthnChallenge(req.user.id, options.challenge);
         
-        // Manual conversion of binary fields for browser-side startAuthentication()
+        // Return exactly what startAuthentication needs
         const responseOptions = {
             ...options,
             challenge: toBase64Url(options.challenge),
