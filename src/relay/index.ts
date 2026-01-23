@@ -194,26 +194,47 @@ app.get('/mfa-challenge', (req, res) => {
 
             <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
             <script>
-                const { startAuthentication } = SimpleWebAuthnBrowser;
+                const { startAuthentication } = window.SimpleWebAuthnBrowser || {};
 
                 async function checkMfa() {
-                    const res = await fetch('/api/mfa/status');
-                    const status = await res.json();
-                    
-                    if (status.webauthn) {
-                        document.getElementById('use-passkey').classList.remove('hidden');
-                        document.getElementById('use-passkey').onclick = verifyPasskey;
-                    }
-                    if (status.totp) {
-                        document.getElementById('totp-input').classList.remove('hidden');
-                    }
+                    try {
+                        const res = await fetch('/api/mfa/status');
+                        const status = await res.json();
+                        
+                        if (status.webauthn) {
+                            document.getElementById('use-passkey').classList.remove('hidden');
+                            document.getElementById('use-passkey').onclick = verifyPasskey;
+                        }
+                        if (status.totp) {
+                            document.getElementById('totp-input').classList.remove('hidden');
+                        }
+                    } catch (e) { console.error('MFA Status Error:', e); }
                 }
 
                 async function verifyPasskey() {
                     try {
+                        console.log('Fetching login options...');
                         const optRes = await fetch('/api/mfa/webauthn/login/options', { method: 'POST' });
                         const options = await optRes.json();
-                        const assertion = await startAuthentication(options);
+                        console.log('Login options received:', options);
+                        
+                        if (!startAuthentication) throw new Error('WebAuthn Browser library not loaded');
+                        
+                        // Defensive call: some versions of simplewebauthn/browser might 
+                        // have different expectations for the options object structure.
+                        let assertion;
+                        try {
+                            assertion = await startAuthentication(options);
+                        } catch (e) {
+                            if (e.name === 'TypeError' && options.publicKey) {
+                                console.warn('Retrying startAuthentication with unwrapped publicKey');
+                                assertion = await startAuthentication(options.publicKey);
+                            } else {
+                                throw e;
+                            }
+                        }
+                        
+                        console.log('Assertion created:', assertion);
                         
                         const verifyRes = await fetch('/api/mfa/webauthn/login/verify', {
                             method: 'POST',
@@ -221,10 +242,14 @@ app.get('/mfa-challenge', (req, res) => {
                             body: JSON.stringify(assertion)
                         });
                         
-                        if ((await verifyRes.json()).verified) window.location.href = '/dashboard';
-                        else alert('Authentication failed');
+                        const result = await verifyRes.json();
+                        if (result.verified) {
+                            window.location.href = '/dashboard';
+                        } else {
+                            alert('Authentication failed: ' + (result.error || 'Unknown error'));
+                        }
                     } catch (err) {
-                        console.error(err);
+                        console.error('Passkey Error:', err);
                         alert(err.message);
                     }
                 }
