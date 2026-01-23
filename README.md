@@ -14,55 +14,70 @@ Onion-Pipe is a zero-trust, end-to-end encrypted webhook relay system leveraging
 2.  **Bridge Relay**: Volunteer-operated stateless nodes. They receive encrypted payloads from the Entry Relay and forward them to the user's `.onion` address over Tor.
 3.  **Onion Client**: Runs locally. Receives the encrypted payload from Tor, decrypts it using a local private key, and forwards it to your local app (e.g., `localhost:8080`).
 
-## 🐳 Docker Deployment
+## 🐳 Installation & Setup
 
-Onion-Pipe is designed to be run entirely in Docker.
+### 1. Choose your Role
+*   **Master Controller**: You are the "Owner". You run the dashboard and manage who can connect.
+*   **Community Bridge**: You are the "Router". You help move traffic from the Master to the User without ever seeing the contents.
 
-### 1. Master Controller (Self-Hosted)
-Run your own private network with GitHub OAuth integration.
+### 2. High-Security Configuration (Docker Secrets)
+Onion-Pipe Relay uses **Docker Secrets** to prevent sensitive info from leaking.
 
-#### Production Configuration (`.env`)
-Create a `.env` file in your project root:
+1.  Create a folder named `secrets`.
+2.  Inside that folder, create text files with your values:
+    -   `admin_user` (e.g., `admin`)
+    -   `admin_password` (e.g., `super_strong_password`)
+    -   `redis_password` (A random long string)
+    -   `session_secret` (A random long string)
 
-```bash
-# --- ONION-PIPE RELAY PRODUCTION ENV ---
+### 3. Deployment (Master Mode)
+Copy this `docker-compose.yml` into your project directory:
 
-# 1. Dashboard Admin Security
-ADMIN_USER=sapphive_admin
-ADMIN_PASSWORD=your_very_secure_admin_password
-SESSION_SECRET=a_long_random_string_for_session_encryption
-
-# 2. GitHub OAuth (Get these from https://github.com/settings/developers)
-# Homepage URL: https://your-domain.com
-# Authorization callback URL: https://your-domain.com/auth/github/callback
-GITHUB_CLIENT_ID=your_github_client_id
-GITHUB_CLIENT_SECRET=your_github_client_secret
-
-# 3. Network Configuration
-PUBLIC_RELAY_URL=https://your-domain.com
-REGISTRATION_SECRET=optional_shared_secret_to_limit_cli_registrations
-```
-
-#### Compose Deployment
 ```yaml
 services:
+  redis:
+    image: redis:alpine
+    # Starts redis with your secret password
+    command: ["sh", "-c", "redis-server --requirepass \"$$(tr -d '\\r' < /run/secrets/redis_password)\""]
+    secrets:
+      - redis_password
+    networks:
+      - internal
+
   master:
-    container_name: onion-pipe-master
     image: sapphive/onion-pipe-relay:latest
     environment:
       - MASTER=true
       - REDIS_URL=redis://redis:6379
-      - ADMIN_USER=${ADMIN_USER}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
-      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      - SESSION_SECRET=${SESSION_SECRET}
-      - PUBLIC_RELAY_URL=${PUBLIC_RELAY_URL}
-      - REGISTRATION_SECRET=${REGISTRATION_SECRET}
+      - PUBLIC_RELAY_URL=https://your-domain.com
+    secrets:
+      - admin_user
+      - admin_password
+      - redis_password
+      - session_secret
     depends_on:
       - redis
-  redis:
-    image: redis:alpine
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+secrets:
+  admin_user:
+    file: ./secrets/admin_user
+  admin_password:
+    file: ./secrets/admin_password
+  redis_password:
+    file: ./secrets/redis_password
+  session_secret:
+    file: ./secrets/session_secret
+```
+
+Run it with:
+```bash
+docker compose up -d
 ```
 
 ### 2. Community Bridge
