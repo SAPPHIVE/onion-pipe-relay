@@ -1,9 +1,9 @@
-# <img src="https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/torbrowser.svg" height="32"> Sapphive Onion-Pipe Relay Engine
+# <img src="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png" height="32"> Onion-Pipe Relay Engine (by Sapphive)
 
 ![Docker Build](https://img.shields.io/docker/pulls/sapphive/onion-pipe-relay) ![License](https://img.shields.io/badge/license-MIT-green) ![Network](https://img.shields.io/badge/network-decentralized-blue)
 
 ## 🌐 The Engine of Onion-Pipe
-The **Onion-Pipe Relay Engine** is the backbone of the Sapphive network. It manages encrypted traffic transit, handles bridge discovery, and provides a professional dashboard for webhook management.
+The **Onion-Pipe Relay Engine** is the backbone of the community network. It manages encrypted traffic transit, handles bridge discovery, and provides a professional dashboard for webhook management.
 
 This unified image supports three distinct roles:
 1.  **Master Controller (Private Infrastructure)**: Your own private gateway with a management dashboard.
@@ -88,7 +88,7 @@ services:
 ---
 
 ## 🤝 Support
-Developed by the **SAPPHIVE Infrastructure Team**.
+Developed by the **Sapphive Infrastructure Team**.
 *   **Repo:** [github.com/sapphive/onion-pipe-relay](https://github.com/sapphive/onion-pipe-relay)
 *   **Web Dashboard:** [onion-pipe.sapphive.com](https://onion-pipe.sapphive.com)
 *   **Inquiries:** [support@sapphive.com](mailto:support@sapphive.com)

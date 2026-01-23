@@ -1,7 +1,7 @@
 {
   "name": "onion-pipe-relay",
   "version": "1.0.0",
-  "description": "**Onion-Pipe** is an anonymous tunnel that pipes darknet traffic to your local services. It is designed to be the ultimate developer tool for testing and receiving webhooks securely.",
+  "description": "**Onion-Pipe** is an open-source anonymous webhook system maintained by the Sapphive Infrastructure Team. It pipes darknet traffic to your local services and is designed as a developer tool for testing webhooks securely.",
   "main": "index.js",
   "scripts": {
     "build": "tsc",

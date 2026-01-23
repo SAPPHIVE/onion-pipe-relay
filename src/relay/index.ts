@@ -6,6 +6,7 @@ import { getSecret } from '../common/secrets';
 import pino from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 import * as http from 'http';
+import path from 'path';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
@@ -36,6 +37,13 @@ declare global {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// Serve assets
+const assetPath = path.join(__dirname, '..', 'assets');
+app.use('/assets', express.static(assetPath));
+app.get('/logo.png', (req, res) => {
+    res.sendFile(path.join(assetPath, 'logo', 'logo.png'));
+});
 
 const redis = new RedisService(process.env.REDIS_URL);
 
@@ -169,10 +177,14 @@ app.get('/mfa-challenge', (req, res) => {
         <html>
         <head>
             <title>MFA Challenge | Onion-Pipe</title>
+            <link rel="icon" href="/logo.png">
             <script src="https://cdn.tailwindcss.com"></script>
         </head>
         <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
             <div class="max-w-sm w-full bg-slate-900 p-8 rounded-2xl shadow-2xl border border-slate-800 text-center">
+                <div class="flex justify-center mb-6">
+                    <img src="/logo.png" class="w-12 h-12 object-contain">
+                </div>
                 <h1 class="text-2xl font-bold mb-6">Multi-Factor Auth</h1>
                 <p class="text-slate-400 text-sm mb-8">Verification required to access your account.</p>
                 
@@ -207,23 +219,20 @@ app.get('/mfa-challenge', (req, res) => {
                         }
                         if (status.totp) {
                             document.getElementById('totp-input').classList.remove('hidden');
+                            document.getElementById('otp-code').focus();
                         }
-                    } catch (e) { console.error('MFA Status Error:', e); }
+                    } catch (e) { /* silent fail in production */ }
                 }
 
                 async function verifyPasskey() {
                     try {
-                        console.log('Fetching login options...');
                         const optRes = await fetch('/api/mfa/webauthn/login/options', { method: 'POST' });
                         const options = await optRes.json();
-                        console.log('Login options received:', options);
                         
                         if (!startAuthentication) throw new Error('WebAuthn Browser library not loaded');
                         
                         // Fix: Use optionsJSON as per SimpleWebAuthn v11+ docs
                         const assertion = await startAuthentication({ optionsJSON: options });
-                        
-                        console.log('Assertion created:', assertion);
                         
                         const verifyRes = await fetch('/api/mfa/webauthn/login/verify', {
                             method: 'POST',
@@ -238,8 +247,7 @@ app.get('/mfa-challenge', (req, res) => {
                             alert('Authentication failed: ' + (result.error || 'Unknown error'));
                         }
                     } catch (err) {
-                        console.error('Passkey Error:', err);
-                        alert(err.message);
+                        if (err.name !== 'AbortError') alert(err.message);
                     }
                 }
 
@@ -277,19 +285,36 @@ if (IS_MASTER) {
         res.send(`
             <html>
             <head>
-                <title>Sapphive Onion-Pipe</title>
-                <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
+                <title>Onion-Pipe | Privacy-First Webhook Relay (maintained by Sapphive)</title>
+                <meta name="description" content="Securely tunnel webhooks to localhost using the Tor network. Onion-Pipe is an open-source system maintained by the Sapphive Infrastructure Team.">
+                <meta name="keywords" content="onion-pipe, tor, webhook relay, tunnel, localhost, privacy, security, sapphive">
+                
+                <!-- Open Graph / Facebook -->
+                <meta property="og:type" content="website">
+                <meta property="og:url" content="https://onion-pipe.sapphive.com">
+                <meta property="og:title" content="Onion-Pipe | Secure Webhook Tunnels">
+                <meta property="og:description" content="Open-source anonymous and secure webhook delivery to your local machine via Tor.">
+                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+
+                <!-- Twitter -->
+                <meta property="twitter:card" content="summary">
+                <meta property="twitter:url" content="https://onion-pipe.sapphive.com">
+                <meta property="twitter:title" content="Onion-Pipe | Secure Webhook Tunnels">
+                <meta property="twitter:description" content="Protect your local dev environment with E2E encrypted webhook tunnels over Tor.">
+                <meta property="twitter:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+
+                <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-900 text-slate-100 font-sans min-h-screen flex items-center justify-center">
                 <div class="max-w-md w-full bg-slate-800 p-8 rounded-xl shadow-2xl border border-slate-700 text-center">
                     <div class="flex justify-center mb-6">
                         <div class="bg-indigo-500/20 p-4 rounded-full">
-                            <span class="text-4xl text-indigo-400">🧅</span>
+                            <img src="/logo.png" class="w-16 h-16 object-contain">
                         </div>
                     </div>
                     <h1 class="text-3xl font-bold mb-2">Onion-Pipe</h1>
-                    <p class="text-slate-400 mb-8 text-sm uppercase tracking-widest">Public Relay Network</p>
+                    <p class="text-slate-400 mb-8 text-sm uppercase tracking-widest text-xs">Community Relay Network</p>
                     
                     <div class="space-y-4">
                         <div class="p-3 bg-slate-900/50 rounded-lg border border-slate-700">
@@ -306,8 +331,9 @@ if (IS_MASTER) {
                     </div>
 
                     <p class="mt-8 text-xs text-slate-500">
-                        Join the network: <br/>
-                        <code class="bg-black/50 px-2 py-1 rounded text-indigo-300">onion-pipe register &lt;onion-address&gt;</code>
+                        Join the network (CLI): <br/>
+                        <code class="bg-black/50 px-2 py-1 rounded text-indigo-300">onion-pipe register &lt;service-id&gt;</code>
+                        <span class="block mt-1 text-[10px] opacity-70 italic text-slate-400">Provide the ID only, omitting .onion</span>
                     </p>
                 </div>
             </body>
@@ -320,12 +346,18 @@ if (IS_MASTER) {
         res.send(`
             <html>
             <head>
-                <title>Login | Onion-Pipe</title>
-                <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
+                <title>Login | Onion-Pipe Secure Access</title>
+                <meta name="description" content="Sign in to the Onion-Pipe dashboard to manage secure tunnels and API keys.">
+                <meta property="og:title" content="Login | Onion-Pipe">
+                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
                 <div class="max-w-sm w-full bg-slate-900 p-8 rounded-2xl shadow-2xl border border-slate-800">
+                    <div class="flex justify-center mb-6">
+                        <img src="/logo.png" class="w-12 h-12 object-contain">
+                    </div>
                     <h1 class="text-2xl font-bold mb-6 text-center">Secure Access</h1>
                     
                     <div class="space-y-4">
@@ -411,11 +443,14 @@ if (IS_MASTER) {
             <html>
             <head>
                 <title>CLI Authentication | Onion-Pipe</title>
-                <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
+                <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
                 <div class="max-w-md w-full bg-slate-900 p-8 rounded-2xl shadow-2xl border border-slate-800 text-center">
+                    <div class="flex justify-center mb-6">
+                        <img src="/logo.png" class="w-12 h-12 object-contain">
+                    </div>
                     <h1 class="text-2xl font-bold mb-2">CLI Authentication</h1>
                     <p class="text-slate-500 text-sm mb-8 font-mono uppercase tracking-widest leading-none">Your One-Time Device Code</p>
                     
@@ -479,15 +514,18 @@ if (IS_MASTER) {
         res.send(`
             <html>
             <head>
-                <title>Dashboard | Onion-Pipe</title>
-                <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧅</text></svg>">
+                <title>Dashboard | Onion-Pipe Management (maintained by Sapphive)</title>
+                <meta name="description" content="Manage your anonymous webhook tunnels, rotate API keys, and configure Multi-Factor Authentication.">
+                <meta property="og:title" content="Dashboard | Onion-Pipe">
+                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-950 text-slate-100 font-sans" data-is-admin="${isAdmin}">
                 <nav class="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
                     <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
                         <div class="flex items-center space-x-2">
-                            <span class="text-2xl">🧅</span>
+                            <img src="/logo.png" class="w-8 h-8 object-contain">
                             <span class="font-bold tracking-tight">Onion-Pipe Dashboard</span>
                         </div>
                         <div class="flex items-center space-x-4">
@@ -672,7 +710,7 @@ if (IS_MASTER) {
                                         ? \`<button onclick="window.disableTotp()" class="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 py-2 rounded-lg text-xs font-bold transition">Disable Authenticator</button>\`
                                         : \`<button onclick="window.setupTotp()" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 py-2 rounded-lg text-xs font-bold transition">Setup TOTP</button>\`;
                                 }
-                            } catch (e) { console.error(e); }
+                            } catch (e) { /* silent fail */ }
                         };
 
                         window.disableTotp = async function() {
@@ -747,7 +785,63 @@ if (IS_MASTER) {
                                 const res = await fetch('/dashboard/tokens');
                                 const data = await res.json();
                                 if (!data.length) {
-                                    list.innerHTML = '<p class="text-center py-10 text-slate-500">No hooks found.</p>';
+                                    const apiKey = document.getElementById('api-key-text')?.dataset.key || '<your-api-key>';
+                                    const relayUrl = window.location.origin;
+                                    list.innerHTML = \`
+                                        <div class="text-center py-6">
+                                            <div class="mb-12 p-6 bg-amber-500/5 border border-amber-500/20 rounded-xl text-center">
+                                                <p class="text-amber-200/70 text-sm">
+                                                    <i class="fas fa-info-circle mr-2 text-amber-500"></i> 
+                                                    No hooks found. Setup your client below to get started. Your onion address will appear here automatically once connected.
+                                                </p>
+                                            </div>
+                                            \${!isAdmin ? \`
+                                            <div class="max-w-3xl mx-auto bg-slate-950 border border-slate-800 rounded-xl overflow-hidden text-left shadow-2xl">
+                                                <div class="bg-indigo-500/10 px-6 py-4 border-b border-slate-800 flex justify-between items-center">
+                                                    <h3 class="text-sm font-bold text-indigo-300">Quick setup — if you’ve done this kind of thing before</h3>
+                                                    <div class="flex items-center space-x-2 bg-black/40 px-3 py-1 rounded border border-slate-800">
+                                                        <code class="text-[10px] text-indigo-400 font-mono italic">\${relayUrl}</code>
+                                                    </div>
+                                                </div>
+                                                <div class="p-6 space-y-8">
+                                                    <div>
+                                                        <h4 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">…or create a new tunnel on the command line</h4>
+                                                        <div class="bg-black/50 rounded-lg p-5 font-mono text-sm text-slate-300 border border-slate-800 leading-relaxed relative group">
+                                                            <p class="text-slate-600 mb-1 italic"># 1. Initialize your keys (Host machine)</p>
+                                                            <p class="mb-4">docker run --rm -v $(pwd)/registration:/registration <span class="text-indigo-400">sapphive/onion-pipe</span> init</p>
+                                                            
+                                                            <p class="text-slate-600 mb-1 italic"># 2. Launch with automatic registration</p>
+                                                            <p class="mb-4">docker run -d --name onion-pipe \\<br/>
+                                                              &nbsp;&nbsp;-v $(pwd)/registration:/registration \\<br/>
+                                                              &nbsp;&nbsp;-v $(pwd)/onion_id:/var/lib/tor/hidden_service \\<br/>
+                                                              &nbsp;&nbsp;-e API_TOKEN="<span class="text-indigo-400">\${apiKey}</span>" \\<br/>
+                                                              &nbsp;&nbsp;-e FORWARD_DEST="http://host.docker.internal:8080" \\<br/>
+                                                              &nbsp;&nbsp;<span class="text-indigo-400">sapphive/onion-pipe</span></p>
+                                                            
+                                                            <p class="text-slate-600 mb-1 italic"># 3. Verify in logs</p>
+                                                            <p>docker logs onion-pipe</p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div>
+                                                        <h4 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">…or register manually (if auto-reg failed)</h4>
+                                                        <div class="bg-black/50 rounded-lg p-5 font-mono text-xs text-slate-300 border border-slate-800 overflow-x-auto leading-relaxed">
+                                                            <p class="text-slate-600 mb-1 italic"># Trigger registration inside the running container</p>
+                                                            <p>docker exec onion-pipe <span class="text-indigo-400">/usr/local/bin/entrypoint.sh register</span></p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="pt-4 border-t border-slate-800/50 flex items-center justify-between">
+                                                        <p class="text-[10px] text-slate-500 italic">
+                                                            <span class="text-indigo-400 font-bold">ProTip!</span> Mount a permanent volume to keep your .onion address forever.
+                                                        </p>
+                                                        <a href="https://hub.docker.com/r/sapphive/onion-pipe" target="_blank" class="text-[10px] text-indigo-400 hover:underline font-bold uppercase tracking-tighter">View Docker Hub →</a>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            \` : ''}
+                                        </div>
+                                    \`;
                                     return;
                                 }
                                 list.innerHTML = data.map(t => \`
@@ -901,6 +995,10 @@ wss.on('connection', (ws, req) => {
 app.post('/register', async (req, res) => {
     const { onion_service_id, public_key, registration_secret, github_id, token: apiKey } = req.body;
 
+    if (!public_key) {
+        return res.status(400).json({ error: 'MISSING_PUBLIC_KEY: End-to-End Encryption is mandatory. Initialize your keys first.' });
+    }
+
     let targetUserId = null;
 
     // 1. If an API Key (token) is provided, validate it
@@ -951,7 +1049,12 @@ app.post('/h/:token', async (req, res) => {
         const metadata = await redis.getTokenMetadata(token);
         if (!metadata || metadata.status !== 'active') return res.status(404).end();
 
-        const encrypted = await CryptoService.encrypt(JSON.stringify({
+        if (!metadata.public_key) {
+            logger.error({ token }, 'Terminal Error: Active hook missing public key');
+            return res.status(500).json({ error: 'SECURITY_VIOLATION: Missing public key for encryption' });
+        }
+
+        const payloadToSend = await CryptoService.encrypt(JSON.stringify({
             data: req.body,
             timestamp: Date.now(),
             nonce: uuidv4()
@@ -968,7 +1071,7 @@ app.post('/h/:token', async (req, res) => {
         ws?.send(JSON.stringify({
             type: 'dispatch',
             onion_service_id: metadata.onion_service_id,
-            payload: encrypted
+            payload: payloadToSend
         }));
 
         res.status(202).json({ status: 'dispatched' });

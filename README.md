@@ -1,6 +1,6 @@
-# Onion-Pipe: Privacy-First Webhook Relay
+# <img src="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png" height="32"> Onion-Pipe: Privacy-First Webhook Relay (maintained by Sapphive)
 
-Onion-Pipe is a zero-trust, end-to-end encrypted webhook relay system leveraging the Tor network. It allows developers to receive webhooks on localhost without exposing ports or trusting a centralized relay with decrypted data.
+Onion-Pipe is an open-source anonymous webhook system maintained by the Sapphive Infrastructure Team. It leverages the Tor network to allow developers to receive webhooks on localhost without exposing ports or trusting a centralized relay with decrypted data.
 
 ## 🚀 Key Features
 - **GitHub Authentication**: Secure identity-based bridge management.
@@ -81,7 +81,7 @@ docker compose up -d
 ```
 
 ### 2. Community Bridge
-Join the Sapphive network and help route traffic. Bridges are stateless and "blind" to your data.
+Join the community network and help route traffic. Bridges are stateless and "blind" to your data.
 
 ```yaml
 services:
