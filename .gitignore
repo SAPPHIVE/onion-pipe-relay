@@ -2,3 +2,9 @@ node_modules
 dist
 .env
 *.log
+
+# Ignore actual secrets but keep folder structure
+# We use .gitkeep to track the folder while ignoring individual files if desired
+# However, the user wants to include placeholders for clarity.
+# So we will NOT ignore the secrets folder entirely.
+# secrets/ 

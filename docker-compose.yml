@@ -4,10 +4,19 @@ services:
     container_name: onion-pipe-redis
     image: redis:alpine
     restart: always
+    # Forces Redis to write to disk frequently and use the Append Only File (AOF)
+    command: ["sh", "-c", "redis-server --appendonly yes --save 60 1 --requirepass \"$$(tr -d '\\r' < /run/secrets/redis_password)\""]
     volumes:
       - redis_data:/data
     networks:
       - onion-internal
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(tr -d '\\r' < /run/secrets/redis_password)\" ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    secrets:
+      - redis_password
 
   # --- MASTER CONTROLLER (The Brain) ---
   master:
@@ -18,15 +27,25 @@ services:
     environment:
       - MASTER=true
       - REDIS_URL=redis://redis:6379
-      - ADMIN_USER=${ADMIN_USER}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
-      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      - SESSION_SECRET=${SESSION_SECRET}
+      - ADMIN_USER_FILE=/run/secrets/admin_user
+      - ADMIN_PASSWORD_FILE=/run/secrets/admin_password
+      - GITHUB_CLIENT_ID_FILE=/run/secrets/github_client_id
+      - GITHUB_CLIENT_SECRET_FILE=/run/secrets/github_client_secret
+      - SESSION_SECRET_FILE=/run/secrets/session_secret
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
       - PUBLIC_RELAY_URL=${PUBLIC_RELAY_URL}
-      # - REGISTRATION_SECRET=${REGISTRATION_SECRET}
+      # - REGISTRATION_SECRET_FILE=/run/secrets/registration_secret
+    secrets:
+      - admin_user
+      - admin_password
+      - github_client_id
+      - github_client_secret
+      - session_secret
+      - redis_password
+      # - registration_secret
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - npm_public
       - onion-internal
@@ -54,3 +73,18 @@ networks:
 
 volumes:
   redis_data:
+    driver: local
+
+secrets:
+  redis_password:
+    file: ./secrets/redis_password
+  admin_user:
+    file: ./secrets/admin_user
+  admin_password:
+    file: ./secrets/admin_password
+  github_client_id:
+    file: ./secrets/github_client_id
+  github_client_secret:
+    file: ./secrets/github_client_secret
+  session_secret:
+    file: ./secrets/session_secret

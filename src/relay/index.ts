@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
 import { RedisService, TokenMetadata } from '../common/redis';
 import { CryptoService } from '../common/crypto';
+import { getSecret } from '../common/secrets';
 import pino from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 import * as http from 'http';
@@ -32,7 +33,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(session({
-    secret: process.env.SESSION_SECRET || uuidv4(),
+    secret: getSecret('SESSION_SECRET', uuidv4()),
     resave: false,
     saveUninitialized: false,
     cookie: { 
@@ -50,18 +51,21 @@ const PORT = process.env.PORT || 3000;
 
 // --- MASTER MODE CONFIG ---
 const IS_MASTER = process.env.MASTER === 'true';
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+const ADMIN_USER = getSecret('ADMIN_USER', 'admin');
+const ADMIN_PASSWORD = getSecret('ADMIN_PASSWORD', 'admin');
 
 passport.serializeUser((user: any, done) => done(null, user));
 passport.deserializeUser((user: any, done) => done(null, user));
 
 if (IS_MASTER) {
-    if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+    const githubClientId = getSecret('GITHUB_CLIENT_ID');
+    const githubClientSecret = getSecret('GITHUB_CLIENT_SECRET');
+
+    if (githubClientId && githubClientSecret) {
         logger.info('🔑 GitHub OAuth Strategy initialized');
         passport.use(new GitHubStrategy({
-            clientID: process.env.GITHUB_CLIENT_ID,
-            clientSecret: process.env.GITHUB_CLIENT_SECRET,
+            clientID: githubClientId,
+            clientSecret: githubClientSecret,
             callbackURL: `${process.env.PUBLIC_RELAY_URL}/auth/github/callback`
         }, (accessToken: string, refreshToken: string, profile: any, done: any) => {
             return done(null, {

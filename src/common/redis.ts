@@ -1,6 +1,7 @@
 import { createClient } from 'redis';
 import pino from 'pino';
 import { v4 as uuidv4 } from 'uuid';
+import { getSecret } from './secrets';
 
 const logger = pino({ name: 'RedisClient' });
 
@@ -23,7 +24,26 @@ export class RedisService {
     private client;
 
     constructor(url: string = process.env.REDIS_URL || 'redis://localhost:6379') {
-        this.client = createClient({ url });
+        let finalUrl = url;
+        const password = getSecret('REDIS_PASSWORD');
+        
+        if (password) {
+            try {
+                const parsedUrl = new URL(url);
+                // Only inject password if it's not already there
+                if (!parsedUrl.password) {
+                    parsedUrl.password = password;
+                    finalUrl = parsedUrl.toString();
+                }
+            } catch (e) {
+                // If url is just a host, construct a proper redis url
+                if (!url.startsWith('redis://')) {
+                    finalUrl = `redis://:${password}@${url}`;
+                }
+            }
+        }
+
+        this.client = createClient({ url: finalUrl });
         this.client.on('error', (err) => logger.error('Redis Error', err));
     }
 
