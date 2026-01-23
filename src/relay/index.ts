@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as http from 'http';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
+import { RedisStore } from 'connect-redis';
 import passport from 'passport';
 import { Strategy as GitHubStrategy } from 'passport-github2';
 
@@ -32,7 +33,14 @@ declare global {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+const redis = new RedisService(process.env.REDIS_URL);
+
 app.use(session({
+    store: new RedisStore({
+        client: redis.getClient(),
+        prefix: "sess:",
+    }),
     secret: getSecret('SESSION_SECRET', uuidv4()),
     resave: false,
     saveUninitialized: false,
@@ -45,7 +53,6 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-const redis = new RedisService(process.env.REDIS_URL);
 const bridgeConnections = new Map<string, WebSocket>();
 const PORT = process.env.PORT || 3000;
 

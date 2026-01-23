@@ -47,6 +47,10 @@ export class RedisService {
         this.client.on('error', (err) => logger.error('Redis Error', err));
     }
 
+    getClient() {
+        return this.client;
+    }
+
     async connect() {
         if (!this.client.isOpen) {
             await this.client.connect();
