@@ -22,7 +22,7 @@ export class CryptoService {
      */
     static async encrypt(payload: string, recipientPublicKeyBase64: string): Promise<string> {
         await this.init();
-        const publicKey = sodium.from_base64(recipientPublicKeyBase64);
+        const publicKey = Buffer.from(recipientPublicKeyBase64, 'base64');
         const payloadBytes = sodium.from_string(payload);
         
         // sodium.crypto_box_seal creates a "sealed box" which includes the ephemeral public key
@@ -36,8 +36,8 @@ export class CryptoService {
     static async decrypt(sealedBoxBase64: string, recipientPublicKeyBase64: string, recipientPrivateKeyBase64: string): Promise<string> {
         await this.init();
         const sealedBox = sodium.from_base64(sealedBoxBase64);
-        const publicKey = sodium.from_base64(recipientPublicKeyBase64);
-        const privateKey = sodium.from_base64(recipientPrivateKeyBase64);
+        const publicKey = Buffer.from(recipientPublicKeyBase64, 'base64');
+        const privateKey = Buffer.from(recipientPrivateKeyBase64, 'base64');
         
         try {
             const decrypted = sodium.crypto_box_seal_open(sealedBox, publicKey, privateKey);

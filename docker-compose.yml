@@ -50,7 +50,6 @@ services:
     networks:
       - npm_public
       - onion-internal
-
   # --- INTERNAL BRIDGE (Initial Workload) ---
   # Ensures the relay works immediately even if no community bridges join.
   internal-bridge:
