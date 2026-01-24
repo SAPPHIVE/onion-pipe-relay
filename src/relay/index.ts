@@ -254,6 +254,18 @@ app.get("/mfa-challenge", (req, res) => {
             <script>
                 const { startAuthentication } = window.SimpleWebAuthnBrowser || {};
 
+                window.showToast = function(message, type = 'indigo') {
+                    const toast = document.createElement('div');
+                    const icon = type === 'red' ? 'fa-exclamation-circle' : 'fa-check-circle';
+                    toast.className = \`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-\${type}-500/50 shadow-2xl text-\${type}-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce\`;
+                    toast.innerHTML = \`<i class="fas \${icon} mr-2"></i> \${message}\`;
+                    document.body.appendChild(toast);
+                    setTimeout(() => {
+                        toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
+                        setTimeout(() => toast.remove(), 500);
+                    }, 3000);
+                };
+
                 async function checkMfa() {
                     try {
                         const res = await fetch('/api/mfa/status');
@@ -290,10 +302,10 @@ app.get("/mfa-challenge", (req, res) => {
                         if (result.verified) {
                             window.location.href = '/dashboard';
                         } else {
-                            alert('Authentication failed: ' + (result.error || 'Unknown error'));
+                            window.showToast('Authentication failed', 'red');
                         }
                     } catch (err) {
-                        if (err.name !== 'AbortError') alert(err.message);
+                        if (err.name !== 'AbortError') window.showToast(err.message, 'red');
                     }
                 }
 
@@ -305,7 +317,7 @@ app.get("/mfa-challenge", (req, res) => {
                         body: JSON.stringify({ code })
                     });
                     if (res.ok) window.location.href = '/dashboard';
-                    else alert('Invalid code');
+                    else window.showToast('Invalid code', 'red');
                 }
 
                 checkMfa();
@@ -784,19 +796,21 @@ if (IS_MASTER) {
                         };
 
                         window.disableTotp = async function() {
-                            if (!confirm('Disable Authenticator App?')) return;
+                            if (!await window.confirmModal('Disable Security', 'Are you sure you want to disable the Authenticator App?')) return;
                             await fetch('/api/mfa/totp/disable', { method: 'POST' });
                             window.refreshMfaStatus();
+                            window.showToast('Authenticator Disabled', 'red');
                         };
 
                         window.disablePasskey = async function() {
-                            if (!confirm('Clear all registered Passkeys?')) return;
+                            if (!await window.confirmModal('Remove Passkeys', 'Are you sure you want to clear all registered Passkeys?')) return;
                             await fetch('/api/mfa/webauthn/disable', { method: 'POST' });
                             window.refreshMfaStatus();
+                            window.showToast('Passkeys Cleared', 'red');
                         };
 
                         window.setupPasskey = async function() {
-                            if (!startRegistration) return alert('WebAuthn failed to load');
+                            if (!startRegistration) return window.showToast('WebAuthn failed to load', 'red');
                             try {
                                 const res = await fetch('/api/mfa/webauthn/register/options', { method: 'POST' });
                                 const options = await res.json();
@@ -809,9 +823,9 @@ if (IS_MASTER) {
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify(attestation)
                                 });
-                                alert('Passkey registered!');
+                                window.showToast('Passkey registered!');
                                 window.refreshMfaStatus();
-                            } catch (e) { alert(e.message); }
+                            } catch (e) { window.showToast(e.message, 'red'); }
                         };
 
                         window.setupTotp = async function() {
@@ -832,10 +846,10 @@ if (IS_MASTER) {
                             });
                             const data = await res.json();
                             if (data.verified) {
-                                alert('TOTP enabled!');
+                                window.showToast('TOTP enabled!');
                                 window.closeTotpModal();
                                 window.refreshMfaStatus();
-                            } else alert('Invalid code');
+                            } else window.showToast('Invalid code', 'red');
                         };
 
                         window.refreshNodes = async function() {
@@ -854,25 +868,30 @@ if (IS_MASTER) {
                             try {
                                 const res = await fetch('/dashboard/tokens');
                                 const data = await res.json();
-                                if (!data.length) {
-                                    const apiKey = document.getElementById('api-key-text')?.dataset.key || '<your-api-key>';
-                                    const relayUrl = window.location.origin;
-                                    list.innerHTML = \`
-                                        <div class="text-center py-6">
-                                            <div class="mb-12 p-6 bg-amber-500/5 border border-amber-500/20 rounded-xl text-center">
-                                                <p class="text-amber-200/70 text-sm">
-                                                    <i class="fas fa-info-circle mr-2 text-amber-500"></i> No hooks found. Setup your client below to get started. Your onion address will appear here automatically once connected.
-                                                </p>
-                                            </div>
-                                            \${!isAdmin ? \`
-                                            <div class="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden text-left shadow-2xl">
-                                                <div class="bg-indigo-500/10 px-6 py-4 border-b border-slate-800 flex justify-between items-center">
-                                                    <h3 class="text-sm font-bold text-indigo-300">Quick setup — if you’ve done this kind of thing before</h3>
-                                                    <div class="flex items-center space-x-2 bg-black/40 px-3 py-1 rounded border border-slate-800">
-                                                        <code class="text-[10px] text-indigo-400 font-mono italic">\${relayUrl}</code>
+                                
+                                const apiKey = document.getElementById('api-key-text')?.dataset.key || '<your-api-key>';
+                                const relayUrl = window.location.origin;
+
+                                let setupHtml = '';
+                                if (!isAdmin) {
+                                    setupHtml = \`
+                                        <div id="quick-setup-container" class="\${data.length > 0 ? 'mb-8' : 'mb-12 text-left'}">
+                                            <details \${data.length === 0 ? 'open' : ''} class="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl group">
+                                                <summary class="bg-indigo-500/10 px-6 py-4 border-b border-slate-800 flex justify-between items-center cursor-pointer hover:bg-indigo-500/20 transition-colors list-none">
+                                                    <div class="flex items-center space-x-3">
+                                                        <h3 class="text-sm font-bold text-indigo-300 uppercase tracking-widest">Quick Setup Guide</h3>
+                                                        \${data.length === 0 ? '<span class="px-2 py-0.5 bg-indigo-500 text-[10px] font-bold rounded animate-pulse">RECOMMENDED</span>' : ''}
                                                     </div>
-                                                </div>
-                                                <div class="p-6 space-y-8">
+                                                    <div class="flex items-center space-x-4">
+                                                        <div class="flex items-center space-x-2 bg-black/40 px-3 py-1 rounded border border-slate-800">
+                                                            <code class="text-[10px] text-indigo-400 font-mono italic">\${relayUrl}</code>
+                                                        </div>
+                                                        <svg class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                                        </svg>
+                                                    </div>
+                                                </summary>
+                                                <div class="p-6 space-y-8 text-left">
                                                     <div>
                                                         <h4 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">…or create a new tunnel on the command line</h4>
                                                         <div class="bg-slate-900/50 rounded-2xl p-6 font-mono text-sm text-slate-300 border border-slate-800/50 leading-relaxed shadow-inner">
@@ -894,6 +913,9 @@ if (IS_MASTER) {
                                                                 <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 break-all select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
                                                                     docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span>
                                                                 </div>
+                                                                <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
+                                                                    Note: FORWARD_DEST should point to your local application endpoint (e.g., localhost:8080) or another Docker container's name/IP if your app is also containerized.
+                                                                </p>
                                                             </div>
 
                                                             <div class="mb-6">
@@ -914,6 +936,9 @@ if (IS_MASTER) {
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">API_TOKEN:</span> "<span class="text-white font-bold">\${apiKey}</span>"</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">FORWARD_DEST:</span> http://host.docker.internal:8080</div>
                                                                 </div>
+                                                                <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
+                                                                    Note: FORWARD_DEST should point to your local application endpoint or another Docker container's name/IP if your app is containerized.
+                                                                </p>
                                                             </div>
                                                             
                                                             <div>
@@ -948,28 +973,42 @@ if (IS_MASTER) {
                                                         <a href="https://hub.docker.com/r/sapphive/onion-pipe" target="_blank" class="text-[10px] text-indigo-400 hover:underline font-bold uppercase tracking-tighter">View Docker Hub →</a>
                                                     </div>
                                                 </div>
-                                            </div>
-                                            \` : ''}
+                                            </details>
                                         </div>
                                     \`;
-                                    return;
                                 }
-                                list.innerHTML = data.map(t => \`
-                                    <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center bg-slate-900/40">
-                                        <div>
-                                            <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
-                                            <p class="text-slate-300 text-sm italic">\${t.metadata?.onion_service_id}.onion</p>
+
+                                if (!data.length) {
+                                    list.innerHTML = \`
+                                        <div class="text-center py-6">
+                                            <div class="mb-12 p-6 bg-amber-500/5 border border-amber-500/20 rounded-xl text-center">
+                                                <p class="text-amber-200/70 text-sm">
+                                                    <i class="fas fa-info-circle mr-2 text-amber-500"></i> No hooks found. Setup your client below to get started. Your onion address will appear here automatically once connected.
+                                                </p>
+                                            </div>
+                                            \${setupHtml}
                                         </div>
-                                        <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-xs font-bold hover:bg-red-500/10 px-2 py-1 rounded transition">DELETE</button>
-                                    </div>
-                                \`).join('');
+                                    \`;
+                                } else {
+                                    list.innerHTML = setupHtml + data.map(t => \`
+                                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center bg-slate-900/40">
+                                            <div>
+                                                <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
+                                                <p class="text-slate-300 text-sm italic">\${t.metadata?.onion_service_id}.onion</p>
+                                            </div>
+                                            <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-xs font-bold hover:bg-red-500/10 px-2 py-1 rounded transition">DELETE</button>
+                                        </div>
+                                    \`).join('');
+                                }
                             } catch (e) { list.innerText = "Error: " + e.message; }
                         };
 
+
                         window.deleteToken = async function(token) {
-                            if (!confirm('Delete?')) return;
+                            if (!await window.confirmModal('Delete Hook', 'Permanently remove this mapping?')) return;
                             await fetch('/dashboard/tokens/' + token, { method: 'DELETE' });
                             window.refreshTokens();
+                            window.showToast('Hook Removed', 'red');
                         };
 
                         window.toggleApiKey = function() {
@@ -979,13 +1018,34 @@ if (IS_MASTER) {
 
                         window.showToast = function(message, type = 'indigo') {
                             const toast = document.createElement('div');
+                            const icon = type === 'red' ? 'fa-exclamation-circle' : 'fa-check-circle';
                             toast.className = \`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-\${type}-500/50 shadow-2xl text-\${type}-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce\`;
-                            toast.innerHTML = \`<i class="fas fa-check-circle mr-2"></i> \${message}\`;
+                            toast.innerHTML = \`<i class="fas \${icon} mr-2"></i> \${message}\`;
                             document.body.appendChild(toast);
                             setTimeout(() => {
                                 toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
                                 setTimeout(() => toast.remove(), 500);
-                            }, 2000);
+                            }, 3000);
+                        };
+
+                        window.confirmModal = function(title, message) {
+                            return new Promise((resolve) => {
+                                const modal = document.createElement('div');
+                                modal.className = 'fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-[200]';
+                                modal.innerHTML = \`
+                                    <div class="bg-slate-900 border border-slate-800 p-8 rounded-2xl max-w-sm w-full text-center shadow-2xl animate-in zoom-in-95 duration-200">
+                                        <h3 class="text-xl font-bold mb-2">\${title}</h3>
+                                        <p class="text-sm text-slate-400 mb-8">\${message}</p>
+                                        <div class="flex space-x-3">
+                                            <button id="modal-cancel" class="flex-1 bg-slate-800 hover:bg-slate-700 py-2 rounded-lg text-sm font-bold transition">Cancel</button>
+                                            <button id="modal-confirm" class="flex-1 bg-indigo-600 hover:bg-indigo-500 py-2 rounded-lg text-sm font-bold transition">Confirm</button>
+                                        </div>
+                                    </div>
+                                \`;
+                                document.body.appendChild(modal);
+                                modal.querySelector('#modal-cancel').onclick = () => { modal.remove(); resolve(false); };
+                                modal.querySelector('#modal-confirm').onclick = () => { modal.remove(); resolve(true); };
+                            });
                         };
 
                         window.copyApiKey = function() {
@@ -1008,7 +1068,7 @@ if (IS_MASTER) {
                         };
 
                         window.rotateApiKey = async function() {
-                            if (!confirm('Rotate?')) return;
+                            if (!await window.confirmModal('Rotate API Key', 'Existing clients will lose access until updated. Continue?')) return;
                             await fetch('/dashboard/api-key/rotate', { method: 'POST' });
                             window.location.reload();
                         };
@@ -1020,14 +1080,14 @@ if (IS_MASTER) {
                         window.submitNewHook = async function() {
                             const onion = document.getElementById('new-onion').value.trim();
                             const pubkey = document.getElementById('new-pubkey').value.trim();
-                            if (!onion || !pubkey) return alert('Please fill all fields');
+                            if (!onion || !pubkey) return window.showToast('Please fill all fields', 'red');
                             const res = await fetch('/register', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ onion_service_id: onion.replace('.onion', ''), public_key: pubkey })
                             });
                             if (res.ok) {
-                                alert('Registered!');
+                                window.showToast('Registered!');
                                 window.showAddHook(false);
                                 window.refreshTokens();
                             }
