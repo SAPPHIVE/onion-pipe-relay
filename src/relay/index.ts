@@ -897,6 +897,19 @@ if (IS_MASTER) {
                                                         <div class="bg-slate-900/50 rounded-2xl p-6 font-mono text-sm text-slate-300 border border-slate-800/50 leading-relaxed shadow-inner">
                                                             <div class="mb-6">
                                                                 <p class="text-indigo-400/60 text-[10px] uppercase font-bold tracking-widest mb-2 flex items-center">
+                                                                    <span class="w-2 h-2 bg-indigo-500 rounded-full mr-2"></span>
+                                                                    Step 0: CLI Login (Optional)
+                                                                </p>
+                                                                <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-xs text-indigo-100/80 hover:border-indigo-500/30 transition-colors select-all cursor-pointer">
+                                                                    docker run -it --rm <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span> login
+                                                                </div>
+                                                                <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
+                                                                    Authorizes your terminal and provides a pre-filled deployment command.
+                                                                </p>
+                                                            </div>
+
+                                                            <div class="mb-6">
+                                                                <p class="text-indigo-400/60 text-[10px] uppercase font-bold tracking-widest mb-2 flex items-center">
                                                                     <span class="w-2 h-2 bg-indigo-500 rounded-full mr-2 animate-pulse"></span>
                                                                     Step 1: Key Initialization
                                                                 </p>
