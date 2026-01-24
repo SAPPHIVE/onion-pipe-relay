@@ -200,7 +200,16 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
             message: "MFA verification required",
           });
       }
-      return res.status(401).redirect("/mfa-challenge");
+
+      // Persist intent for CLI auth redirect after MFA
+      if (req.path === "/cli-auth") {
+        (req.session as any).isCliAuth = true;
+        // Force save session and pass query param
+        return req.session.save(() => res.status(401).redirect("/mfa-challenge?cli=true"));
+      }
+      
+      const isCli = (req.session as any).isCliAuth;
+      return res.status(401).redirect(`/mfa-challenge${isCli ? '?cli=true' : ''}`);
     }
     return next();
   }
@@ -214,11 +223,27 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   if (isApi) {
     return res.status(401).json({ error: "UNAUTHORIZED" });
   }
+
+  // Persist intent for CLI auth redirect after login
+  if (req.path === "/cli-auth") {
+    (req.session as any).isCliAuth = true;
+    return req.session.save(() => res.redirect("/login?cli=true"));
+  }
+
   res.redirect("/login");
 };
 
 app.get("/mfa-challenge", (req, res) => {
   if (!req.isAuthenticated()) return res.redirect("/login");
+  
+  // Sync query param to session if present
+  if (req.query.cli === "true") {
+      (req.session as any).isCliAuth = true;
+      // We don't force save here as we proceed to render immediately
+  }
+
+  const isCli = (req.session as any).isCliAuth === true || req.query.cli === "true";
+  
   res.send(`
         <html>
         <head>
@@ -253,12 +278,13 @@ app.get("/mfa-challenge", (req, res) => {
             <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
             <script>
                 const { startAuthentication } = window.SimpleWebAuthnBrowser || {};
+                const IS_CLI = ${!!isCli};
 
                 window.showToast = function(message, type = 'indigo') {
                     const toast = document.createElement('div');
                     const icon = type === 'red' ? 'fa-exclamation-circle' : 'fa-check-circle';
-                    toast.className = \`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-\${type}-500/50 shadow-2xl text-\${type}-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce\`;
-                    toast.innerHTML = \`<i class="fas \${icon} mr-2"></i> \${message}\`;
+                    toast.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-' + type + '-500/50 shadow-2xl text-' + type + '-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce';
+                    toast.innerHTML = '<i class="fas ' + icon + ' mr-2"></i> ' + message;
                     document.body.appendChild(toast);
                     setTimeout(() => {
                         toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
@@ -300,7 +326,7 @@ app.get("/mfa-challenge", (req, res) => {
                         
                         const result = await verifyRes.json();
                         if (result.verified) {
-                            window.location.href = '/dashboard';
+                            window.location.href = IS_CLI ? '/cli-auth' : '/dashboard';
                         } else {
                             window.showToast('Authentication failed', 'red');
                         }
@@ -316,7 +342,7 @@ app.get("/mfa-challenge", (req, res) => {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ code })
                     });
-                    if (res.ok) window.location.href = '/dashboard';
+                    if (res.ok) window.location.href = IS_CLI ? '/cli-auth' : '/dashboard';
                     else window.showToast('Invalid code', 'red');
                 }
 
@@ -377,7 +403,7 @@ if (IS_MASTER) {
                     <div class="space-y-4">
                         <div class="p-3 bg-slate-900/50 rounded-lg border border-slate-700">
                             <p class="text-xs text-slate-500 mb-1">Network Status</p>
-                            <p class="text-green-400 font-mono text-lg">● ONLINE & ACTIVE</p>
+                            <p class="text-green-400 font-mono text-lg">● Online & Active</p>
                         </div>
                         
                         <div class="pt-4">
@@ -389,10 +415,27 @@ if (IS_MASTER) {
                     </div>
 
                     <p class="mt-8 text-xs text-slate-500">
-                        Join the network (CLI): <br/>
-                        <code class="bg-black/50 px-2 py-1 rounded text-indigo-300">onion-pipe register &lt;service-id&gt;</code>
-                        <span class="block mt-1 text-[10px] opacity-70 italic text-slate-400">Provide the ID only, omitting .onion</span>
+                        <span class="block mb-2 text-xs text-slate-500">Authenticate CLI:</span>
+                        <code onclick="window.copyLandingSnippet(this)" class="bg-black/50 px-2 py-1 rounded text-indigo-300 font-mono cursor-pointer hover:text-white transition-colors border border-transparent hover:border-indigo-500/30">docker run -it --rm sapphive/onion-pipe login</code>
+                        <span class="block mt-1 text-[10px] opacity-70 italic text-slate-400">Sync your account and generate API keys via terminal</span>
                     </p>
+
+                    <script>
+                        window.copyLandingSnippet = function(el) {
+                            const text = el.innerText || el.textContent;
+                            navigator.clipboard.writeText(text.trim());
+                            
+                            const toast = document.createElement('div');
+                            toast.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-indigo-500/50 shadow-2xl text-indigo-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce';
+                            toast.innerText = 'Snippet Copied';
+                            document.body.appendChild(toast);
+                            
+                            setTimeout(() => {
+                                toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
+                                setTimeout(() => toast.remove(), 500);
+                            }, 2000);
+                        };
+                    </script>
                 </div>
             </body>
             </html>
@@ -400,7 +443,48 @@ if (IS_MASTER) {
   });
 
   app.get("/login", (req, res) => {
-    if (req.isAuthenticated()) return res.redirect("/dashboard");
+    // Check for CLI auth intent in session or query param
+    const isCli = (req.session as any).isCliAuth === true || req.query.cli === "true";
+
+    if (req.isAuthenticated()) {
+        if (isCli) {
+             return res.redirect("/cli-auth");
+        }
+        return res.redirect("/dashboard");
+    }
+    
+    // If query param is set but not session, sync them
+    if (req.query.cli === "true" && !(req.session as any).isCliAuth) {
+        (req.session as any).isCliAuth = true;
+        req.session.save((err) => {
+            if (err) logger.error(err, "Session save error in /login");
+             res.send(`
+            <html>
+            <head>
+                <title>Login | Onion-Pipe Secure Access</title>
+                <meta name="description" content="Sign in to the Onion-Pipe dashboard to manage secure tunnels and API keys.">
+                <meta property="og:title" content="Login | Onion-Pipe">
+                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <link rel="icon" href="/logo.png">
+                <script src="https://cdn.tailwindcss.com"></script>
+            </head>
+            <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
+                <div class="max-w-sm w-full bg-slate-900 p-8 rounded-2xl shadow-2xl border border-slate-800">
+                    <div class="flex justify-center mb-6">
+                        <img src="/logo.png" class="w-12 h-12 object-contain">
+                    </div>
+                    <h1 class="text-2xl font-bold mb-6 text-center">Secure Access</h1>
+                    
+                    <div class="space-y-4">
+                        <a href="/auth/github${isCli ? '?cli=true' : ''}" 
+                           class="flex items-center justify-center space-x-3 w-full bg-white hover:bg-slate-100 text-slate-900 py-3 rounded-lg font-bold transition duration-200">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.041-1.416-4.041-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                            <span>Sign in with GitHub</span>
+                        </a>`);
+        });
+        return;
+    }
+
     res.send(`
             <html>
             <head>
@@ -419,7 +503,7 @@ if (IS_MASTER) {
                     <h1 class="text-2xl font-bold mb-6 text-center">Secure Access</h1>
                     
                     <div class="space-y-4">
-                        <a href="/auth/github" 
+                        <a href="/auth/github${isCli ? '?cli=true' : ''}" 
                            class="flex items-center justify-center space-x-3 w-full bg-white hover:bg-slate-100 text-slate-900 py-3 rounded-lg font-bold transition duration-200">
                             <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.041-1.416-4.041-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                             <span>Sign in with GitHub</span>
@@ -452,20 +536,29 @@ if (IS_MASTER) {
 
   app.get(
     "/auth/github",
+    (req, res, next) => {
+        if (req.query.cli === 'true') {
+            (req.session as any).isCliAuth = true;
+            req.session.save(() => next());
+        } else {
+            next();
+        }
+    },
     passport.authenticate("github", { scope: ["user:email"] }),
   );
 
   app.get(
     "/auth/github/callback",
+    (req, res, next) => {
+        // Backup CLI auth intent before Passport potentially regenerates the session
+        if ((req.session as any).isCliAuth) {
+            (req as any).wasCliAuth = true;
+        }
+        next();
+    },
     passport.authenticate("github", { failureRedirect: "/login" }),
     async (req, res) => {
-      const isCli = (req.session as any).isCliAuth;
-      if (isCli) {
-        delete (req.session as any).isCliAuth;
-        return res.redirect("/cli-auth");
-      }
-
-      // Check if MFA is required
+      // Check if MFA is required FIRST
       if (req.user) {
         // EMERGENCY BYPASS FOR LOCKOUT (Temporary)
         if (
@@ -476,13 +569,29 @@ if (IS_MASTER) {
             "⚠️ EMERGENCY: Bypassing MFA for admin due to BYPASS_ADMIN_MFA=true",
           );
           (req.session as any).mfa_verified = true;
-          return res.redirect("/dashboard");
-        }
+          // Continue to CLI check below
+        } else {
+          const mfa = await redis.getUserMfa(req.user.id);
+          if (mfa.totp_enabled || mfa.webauthn_credentials.length > 0) {
+            const isCli = (req.session as any).isCliAuth || (req as any).wasCliAuth;
+            
+            // Restore session flag if it was lost during regeneration
+            if (isCli && !(req.session as any).isCliAuth) {
+                (req.session as any).isCliAuth = true;
+            }
 
-        const mfa = await redis.getUserMfa(req.user.id);
-        if (mfa.totp_enabled || mfa.webauthn_credentials.length > 0) {
-          return res.redirect("/mfa-challenge");
+            return res.redirect(`/mfa-challenge${isCli ? '?cli=true' : ''}`);
+          }
         }
+      }
+
+      const isCli = (req.session as any).isCliAuth || (req as any).wasCliAuth;
+      if (isCli) {
+        // Restore session flag if it was lost during regeneration
+        if (!(req.session as any).isCliAuth) {
+             (req.session as any).isCliAuth = true;
+        }
+        return req.session.save(() => res.redirect("/cli-auth"));
       }
 
       res.redirect("/dashboard");
@@ -500,17 +609,24 @@ if (IS_MASTER) {
   app.use("/api/mfa", setupMfaRoutes(redis));
 
   app.get("/cli-auth", requireAuth, async (req, res) => {
+    // Clear the redirect intent flag once reached
+    delete (req.session as any).isCliAuth;
+
     const isAdmin = req.user?.isAdmin;
     if (isAdmin) return res.send("Admin cannot use CLI auth codes.");
 
     const user = req.user as PassportUser;
     const code = await redis.createAuthCode(user.id);
+    
+    // Set monitoring key for auto-redirect
+    await redis.getClient().set(`cli_status:${code}`, "pending", { EX: 300 });
 
     res.send(`
             <html>
             <head>
                 <title>CLI Authentication | Onion-Pipe</title>
                 <link rel="icon" href="/logo.png">
+                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex items-center justify-center">
@@ -521,17 +637,65 @@ if (IS_MASTER) {
                     <h1 class="text-2xl font-bold mb-2">CLI Authentication</h1>
                     <p class="text-slate-500 text-sm mb-8 font-mono uppercase tracking-widest leading-none">Your One-Time Device Code</p>
                     
-                    <div class="bg-slate-950 border-2 border-dashed border-indigo-500/50 p-6 rounded-xl mb-6">
-                        <span class="text-5xl font-black font-mono tracking-[0.2em] text-indigo-400">${code}</span>
+                    <div onclick="window.copyCode()" class="bg-slate-950 border-2 border-dashed border-indigo-500/50 p-6 rounded-xl mb-6 relative group cursor-pointer hover:border-indigo-400 transition-all duration-200 overflow-hidden active:scale-[0.98]">
+                        <span id="auth-code" class="text-5xl font-black font-mono tracking-[0.2em] text-indigo-400 group-hover:text-indigo-300">${code}</span>
+                        <div class="absolute inset-0 bg-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <span class="text-[10px] text-indigo-300 font-bold uppercase tracking-widest bg-slate-900 px-3 py-1 rounded-full border border-indigo-500/30">Click to Copy</span>
+                        </div>
+                        <div class="absolute -bottom-6 left-0 right-0 text-center">
+                             <span id="status-text" class="text-[10px] text-indigo-500/50 animate-pulse">Waiting for terminal...</span>
+                        </div>
                     </div>
 
-                    <p class="text-slate-400 text-xs mb-8">Paste this code into your terminal to complete the <code class="bg-black px-1 text-indigo-300">onion-pipe login</code> command. It expires in 5 minutes.</p>
+                    <p class="text-slate-400 text-xs mb-8">Paste this code into your terminal to complete the <code class="bg-black px-1 text-indigo-300">onion-pipe login</code> command.</p>
 
                     <a href="/dashboard" class="text-slate-500 hover:text-white text-xs underline transition">Go to Dashboard</a>
                 </div>
+                <script>
+                    const CODE = "${code}";
+
+                    window.showToast = function(message, type = 'indigo') {
+                        const toast = document.createElement('div');
+                        toast.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-' + type + '-500/50 shadow-2xl text-' + type + '-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce';
+                        toast.innerHTML = '<i class="fas fa-check-circle mr-2"></i> ' + message;
+                        document.body.appendChild(toast);
+                        setTimeout(() => {
+                            toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
+                            setTimeout(() => toast.remove(), 500);
+                        }, 3000);
+                    };
+
+                    window.copyCode = async () => {
+                        try {
+                            await navigator.clipboard.writeText(CODE);
+                            window.showToast('Auth Code Copied');
+                        } catch (err) {
+                            console.error('Failed to copy code');
+                        }
+                    };
+
+                    setInterval(async () => {
+                        try {
+                            const res = await fetch('/api/cli/status?code=' + CODE);
+                            const data = await res.json();
+                            if (data.status === 'success') {
+                                document.getElementById('status-text').innerText = "Connected! Redirecting...";
+                                document.getElementById('status-text').className = "text-[10px] text-green-400 font-bold";
+                                setTimeout(() => window.location.href = '/dashboard', 1000);
+                            }
+                        } catch(e) {}
+                    }, 2000);
+                </script>
             </body>
             </html>
         `);
+  });
+
+  app.get("/api/cli/status", async (req, res) => {
+    const code = req.query.code as string;
+    if (!code) return res.json({ status: "unknown" });
+    const status = await redis.getClient().get(`cli_status:${code}`);
+    res.json({ status: status || "unknown" });
   });
 
   app.post("/auth/cli/exchange", async (req, res) => {
@@ -541,6 +705,9 @@ if (IS_MASTER) {
     const apiKey = await redis.exchangeAuthCode(code);
     if (!apiKey)
       return res.status(401).json({ error: "Invalid or expired code" });
+
+    // Mark as success for frontend polling
+    await redis.getClient().set(`cli_status:${code}`, "success", { EX: 60 });
 
     res.json({ api_key: apiKey });
   });
@@ -568,6 +735,12 @@ if (IS_MASTER) {
           return res.redirect("/mfa-challenge");
         }
       }
+
+      const isCli = (req.session as any).isCliAuth;
+      if (isCli) {
+        return res.redirect("/cli-auth");
+      }
+
       res.redirect("/dashboard");
     },
   );
@@ -642,7 +815,7 @@ if (IS_MASTER) {
                         </div>
                         <div class="text-right">
                             <p class="text-[10px] text-slate-500 uppercase font-bold">CLI Usage</p>
-                            <code class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400 font-mono">onion-pipe login</code>
+                            <code onclick="window.copySnippet(this)" class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400 font-mono cursor-pointer hover:text-indigo-300 transition-colors border border-transparent hover:border-indigo-500/30">docker run -it --rm sapphive/onion-pipe login</code>
                         </div>
                     </div>
                     `
@@ -974,7 +1147,7 @@ if (IS_MASTER) {
                                                                 Manual Registration Trigger
                                                             </p>
                                                             <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
-                                                                docker exec onion-pipe <span class="text-indigo-400 font-bold">/usr/local/bin/entrypoint.sh register</span>
+                                                                docker exec onion-pipe <span class="text-indigo-400 font-bold">register</span>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1003,15 +1176,37 @@ if (IS_MASTER) {
                                         </div>
                                     \`;
                                 } else {
-                                    list.innerHTML = setupHtml + data.map(t => \`
-                                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center bg-slate-900/40">
-                                            <div>
-                                                <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
-                                                <p class="text-slate-300 text-sm italic">\${t.metadata?.onion_service_id}.onion</p>
+                                    list.innerHTML = setupHtml + data.map(t => {
+                                        const publicUrl = relayUrl + '/h/' + t.token;
+                                        return \`
+                                        <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 flex justify-between items-start bg-slate-900/40 shadow-lg group/item">
+                                            <div class="flex-1 pr-4">
+                                                <div class="flex items-center space-x-2 mb-2">
+                                                    <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Tunnel ID:</span>
+                                                    <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
+                                                </div>
+                                                
+                                                <div class="mb-4">
+                                                    <p class="text-[10px] uppercase font-black text-slate-500 tracking-tighter mb-1">Public Webhook URL (E2E Encrypted):</p>
+                                                    <div onclick="window.copySnippet(this)" class="bg-black/60 border border-slate-700/50 rounded-lg p-3 text-xs text-indigo-300 font-mono cursor-pointer hover:border-indigo-500/30 transition-all select-all group relative overflow-hidden">
+                                                        \${publicUrl}
+                                                        <div class="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 012-2v-8a2 2 0 01-2-2h-8a2 2 0 01-2 2v8a2 2 0 012 2z" />
+                                                            </svg>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="flex items-center space-x-2">
+                                                    <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Service:</span>
+                                                    <p class="text-slate-400 text-xs italic font-mono">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
+                                                </div>
                                             </div>
-                                            <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-xs font-bold hover:bg-red-500/10 px-2 py-1 rounded transition">DELETE</button>
+                                            <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:bg-red-500 hover:text-white px-3 py-1.5 rounded-lg border border-red-500/20 transition-all uppercase tracking-widest mt-1">Delete</button>
                                         </div>
-                                    \`).join('');
+                                    \`;
+                                    }).join('');
                                 }
                             } catch (e) { list.innerText = "Error: " + e.message; }
                         };
@@ -1032,8 +1227,8 @@ if (IS_MASTER) {
                         window.showToast = function(message, type = 'indigo') {
                             const toast = document.createElement('div');
                             const icon = type === 'red' ? 'fa-exclamation-circle' : 'fa-check-circle';
-                            toast.className = \`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-\${type}-500/50 shadow-2xl text-\${type}-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce\`;
-                            toast.innerHTML = \`<i class="fas \${icon} mr-2"></i> \${message}\`;
+                            toast.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-' + type + '-500/50 shadow-2xl text-' + type + '-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce';
+                            toast.innerHTML = '<i class="fas ' + icon + ' mr-2"></i> ' + message;
                             document.body.appendChild(toast);
                             setTimeout(() => {
                                 toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
@@ -1246,28 +1441,39 @@ app.post("/register", async (req, res) => {
     }
   }
 
-  const token = uuidv4();
+  let finalUserId = targetUserId || (req.user as any)?.id || github_id;
+  let token = uuidv4();
+
+  // 3. Collision Check / Update Logic
+  // If this onion_service_id is already registered, we update it instead of creating a new one
+  const allExisting = await redis.getAllTokens();
+  const existing = allExisting.find(t => t.metadata.onion_service_id === onion_service_id);
+
+  if (existing) {
+    // If it belongs to someone else, reject it (Security)
+    if (existing.metadata.github_id && finalUserId && existing.metadata.github_id !== finalUserId) {
+      return res.status(409).json({ 
+          error: "ONION_ID_CLAIMED: This Onion address is already registered by another user. If you own it, please contact the relay administrator." 
+      });
+    }
+    // Update existing token
+    token = existing.token;
+    logger.info({ token, onion_service_id, userId: finalUserId }, "Updating existing hook registration (Public Key Rotation)");
+  }
+
   const metadata: TokenMetadata = {
     onion_service_id,
     public_key,
     status: "active",
     created_at: Math.floor(Date.now() / 1000).toString(),
+    github_id: finalUserId
   };
-
-  // 3. Associate with the User (from API Key, Session, or explicit ID)
-  if (targetUserId) {
-    metadata.github_id = targetUserId;
-  } else if (req.user) {
-    metadata.github_id = (req.user as any).id;
-  } else if (github_id) {
-    metadata.github_id = github_id;
-  }
 
   await redis.setTokenMetadata(token, metadata);
 
   logger.info(
-    { token, onion_service_id, userId: metadata.github_id },
-    "New client registered",
+    { token, onion_service_id, userId: metadata.github_id, isUpdate: !!existing },
+    existing ? "Client registration updated" : "New client registered",
   );
   res.json({
     token,
@@ -1275,24 +1481,30 @@ app.post("/register", async (req, res) => {
   });
 });
 
-app.post("/h/:token", async (req, res) => {
-  const { token } = req.params;
+app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
+  const token = req.params.token as string;
   try {
     const metadata = await redis.getTokenMetadata(token);
     if (!metadata || metadata.status !== "active") return res.status(404).end();
 
     if (!metadata.public_key) {
       logger.error({ token }, "Terminal Error: Active hook missing public key");
-      return res
-        .status(500)
-        .json({
-          error: "SECURITY_VIOLATION: Missing public key for encryption",
-        });
+      return res.status(500).json({
+        error: "SECURITY_VIOLATION: Missing public key for encryption",
+      });
+    }
+
+    // Try to parse as JSON if possible for a cleaner payload, otherwise send as raw string
+    let data = req.body;
+    try {
+      data = JSON.parse(req.body);
+    } catch (e) {
+      // Keep as string
     }
 
     const payloadToSend = await CryptoService.encrypt(
       JSON.stringify({
-        data: req.body,
+        data,
         timestamp: Date.now(),
         nonce: uuidv4(),
       }),

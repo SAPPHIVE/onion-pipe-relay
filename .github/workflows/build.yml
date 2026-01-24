@@ -1,4 +1,4 @@
-name: Build and Publish Onion-Pipe
+name: Build and Publish Onion-Pipe-Relay
 
 on:
   push:

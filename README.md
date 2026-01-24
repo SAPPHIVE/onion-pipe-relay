@@ -80,7 +80,7 @@ Run it with:
 docker compose up -d
 ```
 
-### 2. Community Bridge
+### 3. Community Bridge
 Join the community network and help route traffic. Bridges are stateless and "blind" to your data.
 
 ```yaml
@@ -93,7 +93,13 @@ services:
     restart: always
 ```
 
-### 3. Developer Client
+### 4. Standalone Relay (Simple Entry)
+Run a basic entry relay without a dashboard (direct traffic only).
+```bash
+docker run -d -p 80:3000 sapphive/onion-pipe-relay
+```
+
+### 5. Developer Client
 Establish a tunnel to your local service.
 
 ```yaml
@@ -109,20 +115,17 @@ services:
 
 ## 🛰️ CLI Usage
 
-The `onion-pipe-relay` CLI helps you manage your account and register tunnels.
+The `sapphive/onion-pipe` image includes a professional CLI to help you manage your account and register tunnels.
 
 ```bash
 # 1. Initialize local security keys
-npm run cli init
+docker run --rm -v ./registration:/registration sapphive/onion-pipe init
 
-# 2. Login via GitHub (opens browser)
-npm run cli login
+# 2. Login via GitHub (follows interactive prompts)
+docker run -it --rm sapphive/onion-pipe login
 
-# 3. Complete authentication by pasting the 6-digit code
-npm run cli auth <6-digit-code>
-
-# 4. Register your local .onion address to your account
-npm run cli register <your-hidden-service-id>
+# 3. Register your local .onion address to your account (manual trigger)
+docker exec onion-pipe register
 ```
 
 ## 🛡️ Security Guarantees
