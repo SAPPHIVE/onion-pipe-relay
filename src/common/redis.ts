@@ -169,6 +169,16 @@ export class RedisService {
     async isUserBanned(githubId: string): Promise<boolean> {
         return Boolean(await this.client.sIsMember('banned_users', githubId));
     }
+
+    async getUserStats(): Promise<{ total: number, active: number, banned: number }> {
+        const total = await this.client.sCard('all_users');
+        const banned = await this.client.sCard('banned_users');
+        return {
+            total,
+            banned,
+            active: Math.max(0, total - banned)
+        };
+    }
     
     async getPaginatedTokens(userId: string | null, page: number, limit: number, search: string = ''): Promise<{ tokens: any[], total: number }> {
         // userId null means ALL tokens (Admin view)

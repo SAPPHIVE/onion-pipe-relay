@@ -30,6 +30,12 @@ Onion-Pipe Relay uses **Docker Secrets** to prevent sensitive info from leaking.
     -   `redis_password` (A random long string)
     -   `session_secret` (A random long string)
 
+**🔄 Hot-Relay Support:**
+To rotate Admin credentials without restarting the container (keeping all bridge connections alive), update the files in your `secrets/` folder and run:
+>```bash
+> docker kill -s SIGHUP onion-pipe-master
+>```
+
 ### 3. Deployment (Master Mode)
 Copy this `docker-compose.yml` into your project directory:
 

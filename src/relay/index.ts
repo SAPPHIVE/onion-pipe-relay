@@ -148,8 +148,22 @@ const PORT = process.env.PORT || 3000;
 
 // --- MASTER MODE CONFIG ---
 const IS_MASTER = process.env.MASTER === "true";
-const ADMIN_USER = getSecret("ADMIN_USER", "admin");
-const ADMIN_PASSWORD = getSecret("ADMIN_PASSWORD", "admin");
+
+// Admin credentials cache for high-performance static access
+let adminCreds = {
+  user: getSecret("ADMIN_USER", "admin"),
+  pass: getSecret("ADMIN_PASSWORD", "admin")
+};
+
+// Hot-reload trigger for secrets
+const reloadAdminSecrets = () => {
+    adminCreds.user = getSecret("ADMIN_USER", "admin");
+    adminCreds.pass = getSecret("ADMIN_PASSWORD", "admin");
+    logger.info("🔐 Super Admin credentials reloaded from secrets files.");
+};
+
+// Listen for SIGHUP (standard reload signal) to refresh secrets without restart
+process.on('SIGHUP', reloadAdminSecrets);
 
 passport.serializeUser((user: any, done) => done(null, user));
 passport.deserializeUser((user: any, done) => done(null, user));
@@ -161,8 +175,9 @@ if (IS_MASTER) {
   // Admin Local Strategy
   passport.use(
     new LocalStrategy((username, password, done) => {
-      logger.debug({ received_user: username, expected_user: ADMIN_USER }, "Login attempt check");
-      if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
+      logger.debug({ received_user: username, expected_user: adminCreds.user }, "Login attempt check");
+      
+      if (username === adminCreds.user && password === adminCreds.pass) {
         return done(null, {
           id: "admin",
           username: "Super Admin",
@@ -868,6 +883,7 @@ if (IS_MASTER) {
     const user = req.user as PassportUser;
     const username = isAdmin ? "Super Admin" : user.username;
     const apiKey = !isAdmin ? await redis.getOrCreateUserApiKey(user.id) : null;
+    const stats = isAdmin ? await redis.getUserStats() : { total: 0, active: 0, banned: 0 };
 
     res.send(`
             <html>
@@ -934,18 +950,32 @@ if (IS_MASTER) {
                     }
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg text-center">
                             <p class="text-slate-500 text-sm mb-1">Network Status</p>
                             <p class="text-2xl font-bold text-green-400">● Active</p>
                         </div>
-                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg text-center">
                             <p class="text-slate-500 text-sm mb-1">Connected Bridges</p>
-                            <p class="text-2xl font-bold">${bridgeConnections.size}</p>
+                            <p class="text-2xl font-bold text-white">${bridgeConnections.size}</p>
                         </div>
-                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg text-center">
                             <p class="text-slate-500 text-sm mb-1">Public Endpoint</p>
                             <p class="text-lg font-mono truncate text-indigo-400">${process.env.PUBLIC_RELAY_URL?.replace("https://", "") || "local"}</p>
                         </div>
+                        ${isAdmin ? `
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg text-center">
+                            <p class="text-slate-500 text-sm mb-1">Total Users</p>
+                            <p class="text-2xl font-bold text-indigo-400">${stats?.total}</p>
+                        </div>
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg text-center">
+                            <p class="text-slate-500 text-sm mb-1">Active Users</p>
+                            <p class="text-2xl font-bold text-emerald-400">${stats?.active}</p>
+                        </div>
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg text-center">
+                            <p class="text-slate-500 text-sm mb-1">Banned Users</p>
+                            <p class="text-2xl font-bold text-rose-400">${stats?.banned}</p>
+                        </div>
+                        ` : ''}
                     </div>
 
                     <!-- MFA Settings (Global) -->

@@ -20,6 +20,7 @@ services:
 
   # --- MASTER CONTROLLER (The Brain) ---
   master:
+    # REFRESH SECRETS CMD: docker kill -s SIGHUP onion-pipe-master
     container_name: onion-pipe-master
     image: sapphive/onion-pipe-relay:latest
     restart: always

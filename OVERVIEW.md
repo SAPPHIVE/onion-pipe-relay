@@ -24,6 +24,12 @@ Before deploying, create a `secrets/` directory and add the following files (no 
 - `github_client_id`: (Optional) Your GitHub OAuth ID for identity verification.
 - `github_client_secret`: (Optional) Your GitHub OAuth Secret.
 
+> **💡 Pro-Tip: Zero-Downtime Rotation**
+> You can change the `admin_user` or `admin_password` files on your host and reload them into the running container without a restart by running:
+>```bash
+> docker kill -s SIGHUP onion-pipe-master
+>```
+
 ## 🚀 Deployment Modes
 
 ### Mode A: Master Controller (Self-Hosted Hub)
