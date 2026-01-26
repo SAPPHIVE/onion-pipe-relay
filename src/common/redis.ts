@@ -11,6 +11,7 @@ export interface TokenMetadata {
     status: 'active' | 'disabled';
     created_at: string;
     github_id?: string;
+    project_name?: string;
 }
 
 export interface BridgeHeartbeat {
@@ -207,9 +208,11 @@ export class RedisService {
 
             if (search) {
                 const searchLower = search.toLowerCase();
+                const projectName = (meta.project_name || 'Default').toLowerCase();
                 const matches = tid.includes(search) || 
                                 meta.onion_service_id.includes(searchLower) || 
                                 ownerName.toLowerCase().includes(searchLower) ||
+                                projectName.includes(searchLower) ||
                                 (meta.github_id && meta.github_id.toString().includes(search));
                 if (!matches) continue;
             }
@@ -229,6 +232,15 @@ export class RedisService {
         const result = filteredTokens.slice(start, start + limit);
         
         return { tokens: result, total };
+    }
+
+    async updateTokenProject(token: string, githubId: string, projectName: string) {
+        const meta = await this.getTokenMetadata(token);
+        if (!meta || meta.github_id !== githubId) {
+            throw new Error('Unauthorized or token not found');
+        }
+        meta.project_name = projectName;
+        await this.client.hSet(`token:${token}`, meta as any);
     }
 
     async saveUsername(githubId: string, username: string) {

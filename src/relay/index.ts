@@ -42,6 +42,17 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+// --- SECURITY HARDENING: Manual Security Headers (Protection without extra dependencies) ---
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    // Content Security Policy to prevent XSS
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data: https://raw.githubusercontent.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self';");
+    next();
+});
+
 // Serve assets
 const assetPath = path.join(__dirname, "..", "assets");
 app.use("/assets", express.static(assetPath));
@@ -231,6 +242,16 @@ if (IS_MASTER) {
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   logger.debug({ path: req.path, auth: req.isAuthenticated(), user: !!req.user }, "requireAuth check");
   if (req.isAuthenticated() && req.user) {
+    // SECURITY HARDENING: Check if user was banned while they had an active session
+    const isBanned = await redis.isUserBanned(req.user.id);
+    if (isBanned) {
+      logger.warn({ userId: req.user.id }, "Banned user attempted access with active session. Revoking.");
+      return req.logout(() => {
+          res.clearCookie("op-sid");
+          res.status(403).json({ error: "BANNED", message: "Your account has been suspended." });
+      });
+    }
+
     const mfa = await redis.getUserMfa(req.user.id);
     const needsMfa = mfa.totp_enabled || mfa.webauthn_credentials.length > 0;
 
@@ -506,7 +527,7 @@ if (IS_MASTER) {
     const errorHtml = req.query.error === 'banned' 
         ? `<div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 mb-6 text-center">
              <div class="flex items-center justify-center space-x-2 text-red-500 mb-1">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                 <span class="text-sm font-bold uppercase tracking-widest">Account Suspended</span>
              </div>
              <p class="text-xs text-red-400/80 uppercase tracking-tighter leading-tight mx-auto">Contact system administrator.</p>
@@ -514,7 +535,7 @@ if (IS_MASTER) {
         : req.query.error === 'hijack'
             ? `<div class="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 mb-6 text-center">
                  <div class="flex items-center justify-center space-x-2 text-amber-500 mb-1">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                     <span class="text-sm font-bold uppercase tracking-widest">Session Mismatch</span>
                  </div>
                  <p class="text-xs text-amber-400/80 uppercase tracking-tighter leading-tight mx-auto">Security mismatch. Please re-authenticate.</p>
@@ -555,7 +576,7 @@ if (IS_MASTER) {
                     <div class="space-y-4">
                         <a href="/auth/github${isCli ? '?cli=true' : ''}" 
                            class="flex items-center justify-center space-x-3 w-full bg-white hover:bg-slate-100 text-slate-900 py-3 rounded-lg font-bold transition duration-200">
-                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.041-1.416-4.041-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg"class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.041-1.416-4.041-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                             <span>Sign in with GitHub</span>
                         </a>`);
         });
@@ -584,7 +605,7 @@ if (IS_MASTER) {
                     <div class="space-y-4">
                         <a href="/auth/github${isCli ? '?cli=true' : ''}" 
                            class="flex items-center justify-center space-x-3 w-full bg-white hover:bg-slate-100 text-slate-900 py-3 rounded-lg font-bold transition duration-200">
-                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.041-1.416-4.041-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.041-1.416-4.041-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                             <span>Sign in with GitHub</span>
                         </a>
 
@@ -1046,8 +1067,13 @@ if (IS_MASTER) {
                         <div class="p-6">
                             <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 mb-6">
                                 <div class="relative flex-1">
-                                    <input type="text" id="user-search" placeholder="Search users by name or ID..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all" onkeyup="window.userManager.debounceSearch(this.value)">
+                                    <input type="text" id="user-search" placeholder="Search users by name or ID..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-12 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all font-medium" onkeyup="window.userManager.debounceSearch(this.value)">
                                     <i class="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                    <button id="user-search-clear" onclick="window.userManager.clearSearch()" class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-indigo-400 rounded-md border border-slate-700/50 transition-all shadow-lg active:scale-95" title="Clear Search">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M 9.375 11.109375 C 9.539062 11.175781 9.695312 11.253906 9.851562 11.335938 C 9.898438 11.363281 9.945312 11.386719 9.992188 11.410156 C 10.128906 11.480469 10.269531 11.550781 10.40625 11.625 C 10.445312 11.644531 10.480469 11.664062 10.519531 11.683594 C 10.699219 11.777344 10.875 11.871094 11.054688 11.964844 C 11.34375 12.121094 11.636719 12.269531 11.929688 12.421875 C 12.328125 12.628906 12.726562 12.835938 13.125 13.046875 C 13.410156 13.195312 13.695312 13.34375 13.980469 13.492188 C 14.027344 13.519531 14.070312 13.542969 14.117188 13.566406 C 14.253906 13.636719 14.394531 13.710938 14.53125 13.78125 C 14.847656 13.945312 15.164062 14.113281 15.480469 14.277344 C 15.566406 14.320312 15.648438 14.363281 15.734375 14.40625 C 17.078125 15.109375 17.078125 15.109375 17.203125 15.234375 C 17.191406 15.597656 17.078125 15.886719 16.929688 16.21875 C 16.894531 16.296875 16.894531 16.296875 16.859375 16.378906 C 16.320312 17.617188 15.714844 18.824219 15 19.96875 C 14.980469 20.003906 14.957031 20.035156 14.9375 20.070312 C 14.625 20.574219 14.320312 21.023438 13.726562 21.203125 C 12.796875 21.414062 11.679688 20.804688 10.875 20.390625 C 10.78125 20.296875 10.78125 20.296875 10.765625 20.183594 C 10.785156 20.03125 10.828125 19.992188 10.941406 19.890625 C 10.972656 19.863281 11.007812 19.832031 11.042969 19.800781 C 11.078125 19.765625 11.117188 19.734375 11.152344 19.703125 C 11.226562 19.636719 11.300781 19.566406 11.375 19.5 C 11.410156 19.46875 11.445312 19.433594 11.480469 19.402344 C 11.972656 18.945312 12.714844 18.15625 12.851562 17.476562 C 12.84375 17.242188 12.792969 17.152344 12.65625 16.96875 C 12.519531 16.855469 12.367188 16.863281 12.191406 16.859375 C 12.003906 16.890625 11.886719 16.980469 11.769531 17.125 C 11.738281 17.164062 11.710938 17.207031 11.679688 17.25 C 11.648438 17.296875 11.617188 17.34375 11.582031 17.390625 C 11.550781 17.4375 11.519531 17.484375 11.484375 17.53125 C 11.214844 17.921875 10.921875 18.265625 10.59375 18.609375 C 10.558594 18.644531 10.523438 18.683594 10.488281 18.71875 C 10.285156 18.933594 10.066406 19.128906 9.835938 19.316406 C 9.808594 19.339844 9.78125 19.363281 9.753906 19.386719 C 9.570312 19.53125 9.464844 19.570312 9.234375 19.546875 C 9.113281 19.492188 9.113281 19.492188 8.992188 19.414062 C 8.945312 19.386719 8.902344 19.355469 8.855469 19.328125 C 8.78125 19.28125 8.78125 19.28125 8.710938 19.234375 C 8.660156 19.203125 8.613281 19.171875 8.558594 19.136719 C 7.335938 18.351562 7.335938 18.351562 7.171875 18.1875 C 7.171875 18.09375 7.167969 18 7.171875 17.90625 C 7.257812 17.863281 7.339844 17.820312 7.421875 17.78125 C 7.476562 17.753906 7.527344 17.726562 7.582031 17.703125 C 7.671875 17.65625 7.761719 17.613281 7.855469 17.570312 C 8.101562 17.457031 8.3125 17.320312 8.527344 17.15625 C 8.566406 17.128906 8.566406 17.128906 8.605469 17.097656 C 8.789062 16.957031 8.925781 16.820312 8.972656 16.589844 C 8.96875 16.382812 8.953125 16.242188 8.8125 16.078125 C 8.621094 15.941406 8.457031 15.90625 8.230469 15.941406 C 8.019531 16.015625 7.863281 16.160156 7.691406 16.296875 C 7.160156 16.699219 6.503906 16.847656 5.859375 16.96875 C 5.808594 16.976562 5.761719 16.988281 5.710938 17 C 5.421875 16.949219 5.265625 16.746094 5.0625 16.546875 C 5.003906 16.492188 4.941406 16.441406 4.882812 16.390625 C 3.597656 15.265625 3.597656 15.265625 3.546875 14.765625 C 3.53125 14.355469 3.59375 14.101562 3.863281 13.792969 C 4.183594 13.515625 4.464844 13.441406 4.878906 13.347656 C 6.324219 13.003906 7.730469 12.367188 8.824219 11.335938 C 8.855469 11.308594 8.886719 11.277344 8.921875 11.246094 C 8.949219 11.21875 8.976562 11.195312 9.003906 11.167969 C 9.140625 11.082031 9.210938 11.085938 9.375 11.109375 Z M 9.375 11.109375 M 19.742188 2.585938 C 20.148438 2.960938 20.417969 3.488281 20.453125 4.039062 C 20.457031 4.109375 20.457031 4.179688 20.457031 4.25 C 20.457031 4.28125 20.457031 4.3125 20.460938 4.34375 C 20.453125 4.820312 20.25 5.230469 20.035156 5.644531 C 20.011719 5.695312 19.984375 5.746094 19.960938 5.796875 C 19.773438 6.160156 19.585938 6.523438 19.390625 6.886719 C 19.238281 7.175781 19.089844 7.464844 18.9375 7.757812 C 18.855469 7.917969 18.769531 8.082031 18.6875 8.242188 C 18.636719 8.335938 18.589844 8.429688 18.539062 8.523438 C 18.480469 8.640625 18.417969 8.757812 18.359375 8.875 C 18.339844 8.914062 18.320312 8.949219 18.300781 8.984375 C 18.160156 9.253906 18 9.511719 17.828125 9.765625 C 17.757812 9.886719 17.757812 9.886719 17.769531 10.007812 C 17.820312 10.144531 17.878906 10.261719 17.945312 10.390625 C 18.414062 11.300781 18.359375 12.292969 18.054688 13.242188 C 18.015625 13.359375 17.976562 13.476562 17.933594 13.59375 C 17.917969 13.628906 17.90625 13.667969 17.894531 13.707031 C 17.796875 13.953125 17.796875 13.953125 17.667969 14.015625 C 17.460938 14.015625 17.320312 13.925781 17.140625 13.832031 C 17.082031 13.800781 17.082031 13.800781 17.023438 13.773438 C 16.902344 13.707031 16.78125 13.644531 16.65625 13.578125 C 16.578125 13.539062 16.5 13.496094 16.417969 13.453125 C 16.21875 13.351562 16.019531 13.246094 15.824219 13.140625 C 15.625 13.039062 15.429688 12.933594 15.230469 12.828125 C 15.195312 12.808594 15.15625 12.789062 15.121094 12.769531 C 14.835938 12.621094 14.554688 12.476562 14.273438 12.328125 C 13.949219 12.160156 13.625 11.988281 13.300781 11.820312 C 12.9375 11.628906 12.574219 11.4375 12.210938 11.25 C 12.050781 11.167969 11.890625 11.082031 11.726562 11 C 11.632812 10.949219 11.539062 10.902344 11.441406 10.851562 C 10.707031 10.472656 10.707031 10.472656 10.421875 10.300781 C 10.390625 10.28125 10.359375 10.261719 10.328125 10.246094 C 10.265625 10.171875 10.265625 10.171875 10.238281 10.042969 C 10.277344 9.824219 10.398438 9.71875 10.554688 9.5625 C 10.609375 9.507812 10.664062 9.453125 10.71875 9.394531 C 10.757812 9.355469 10.757812 9.355469 10.800781 9.3125 C 10.871094 9.242188 10.933594 9.164062 10.996094 9.085938 C 11.46875 8.527344 12.316406 8.101562 13.03125 7.96875 C 13.105469 7.96875 13.175781 7.96875 13.25 7.96875 C 13.59375 7.972656 13.59375 7.972656 13.921875 7.875 C 14.136719 7.652344 14.230469 7.347656 14.339844 7.0625 C 14.414062 6.878906 14.507812 6.707031 14.605469 6.53125 C 14.644531 6.457031 14.683594 6.382812 14.722656 6.308594 C 14.742188 6.269531 14.765625 6.230469 14.785156 6.1875 C 14.921875 5.925781 15.058594 5.660156 15.195312 5.398438 C 15.246094 5.296875 15.296875 5.195312 15.351562 5.097656 C 15.5 4.804688 15.648438 4.515625 15.796875 4.226562 C 15.839844 4.136719 15.882812 4.050781 15.925781 3.964844 C 15.980469 3.859375 16.035156 3.757812 16.085938 3.652344 C 16.464844 2.914062 16.890625 2.394531 17.691406 2.117188 C 18.402344 1.9375 19.171875 2.125 19.742188 2.585938 Z M 19.742188 2.585938 M 6.109375 7.554688 C 6.355469 7.722656 6.566406 7.917969 6.632812 8.214844 C 6.679688 8.53125 6.636719 8.765625 6.464844 9.035156 C 6.285156 9.265625 6.101562 9.355469 5.820312 9.414062 C 5.507812 9.441406 5.289062 9.375 5.046875 9.179688 C 4.820312 8.960938 4.730469 8.753906 4.714844 8.441406 C 4.722656 8.167969 4.800781 7.957031 4.988281 7.757812 C 5.308594 7.472656 5.710938 7.414062 6.109375 7.554688 Z M 6.109375 7.554688 M 3.664062 10.484375 C 3.898438 10.652344 4.035156 10.824219 4.101562 11.105469 C 4.144531 11.402344 4.09375 11.609375 3.945312 11.871094 C 3.753906 12.109375 3.585938 12.226562 3.28125 12.28125 C 2.964844 12.296875 2.734375 12.226562 2.480469 12.035156 C 2.257812 11.832031 2.191406 11.617188 2.179688 11.320312 C 2.191406 11.039062 2.265625 10.824219 2.457031 10.617188 C 2.804688 10.308594 3.257812 10.25 3.664062 10.484375 Z M 3.664062 10.484375 "/>
+                                        </svg>
+                                    </button>
                                 </div>
                                 <div class="flex items-center space-x-2">
                                     <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap">Filter:</span>
@@ -1118,14 +1144,18 @@ if (IS_MASTER) {
                         <div class="p-6">
                             <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 mb-6">
                                 <div class="relative flex-1">
-                                    <input type="text" placeholder="Search hooks by ID or Owner..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all" onkeyup="window.tokenManager.debounceSearch(this.value)">
+                                    <input type="text" id="token-search" placeholder="${isAdmin ? 'Search hooks by ID or Owner...' : 'Search hooks by ID or Project Name...'}" class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-12 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all font-medium" onkeyup="window.tokenManager.debounceSearch(this.value)">
                                     <i class="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                    <button id="token-search-clear" onclick="window.tokenManager.clearSearch()" class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-indigo-400 rounded-md border border-slate-700/50 transition-all shadow-lg active:scale-95" title="Clear Search">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M 9.375 11.109375 C 9.539062 11.175781 9.695312 11.253906 9.851562 11.335938 C 9.898438 11.363281 9.945312 11.386719 9.992188 11.410156 C 10.128906 11.480469 10.269531 11.550781 10.40625 11.625 C 10.445312 11.644531 10.480469 11.664062 10.519531 11.683594 C 10.699219 11.777344 10.875 11.871094 11.054688 11.964844 C 11.34375 12.121094 11.636719 12.269531 11.929688 12.421875 C 12.328125 12.628906 12.726562 12.835938 13.125 13.046875 C 13.410156 13.195312 13.695312 13.34375 13.980469 13.492188 C 14.027344 13.519531 14.070312 13.542969 14.117188 13.566406 C 14.253906 13.636719 14.394531 13.710938 14.53125 13.78125 C 14.847656 13.945312 15.164062 14.113281 15.480469 14.277344 C 15.566406 14.320312 15.648438 14.363281 15.734375 14.40625 C 17.078125 15.109375 17.078125 15.109375 17.203125 15.234375 C 17.191406 15.597656 17.078125 15.886719 16.929688 16.21875 C 16.894531 16.296875 16.894531 16.296875 16.859375 16.378906 C 16.320312 17.617188 15.714844 18.824219 15 19.96875 C 14.980469 20.003906 14.957031 20.035156 14.9375 20.070312 C 14.625 20.574219 14.320312 21.023438 13.726562 21.203125 C 12.796875 21.414062 11.679688 20.804688 10.875 20.390625 C 10.78125 20.296875 10.78125 20.296875 10.765625 20.183594 C 10.785156 20.03125 10.828125 19.992188 10.941406 19.890625 C 10.972656 19.863281 11.007812 19.832031 11.042969 19.800781 C 11.078125 19.765625 11.117188 19.734375 11.152344 19.703125 C 11.226562 19.636719 11.300781 19.566406 11.375 19.5 C 11.410156 19.46875 11.445312 19.433594 11.480469 19.402344 C 11.972656 18.945312 12.714844 18.15625 12.851562 17.476562 C 12.84375 17.242188 12.792969 17.152344 12.65625 16.96875 C 12.519531 16.855469 12.367188 16.863281 12.191406 16.859375 C 12.003906 16.890625 11.886719 16.980469 11.769531 17.125 C 11.738281 17.164062 11.710938 17.207031 11.679688 17.25 C 11.648438 17.296875 11.617188 17.34375 11.582031 17.390625 C 11.550781 17.4375 11.519531 17.484375 11.484375 17.53125 C 11.214844 17.921875 10.921875 18.265625 10.59375 18.609375 C 10.558594 18.644531 10.523438 18.683594 10.488281 18.71875 C 10.285156 18.933594 10.066406 19.128906 9.835938 19.316406 C 9.808594 19.339844 9.78125 19.363281 9.753906 19.386719 C 9.570312 19.53125 9.464844 19.570312 9.234375 19.546875 C 9.113281 19.492188 9.113281 19.492188 8.992188 19.414062 C 8.945312 19.386719 8.902344 19.355469 8.855469 19.328125 C 8.78125 19.28125 8.78125 19.28125 8.710938 19.234375 C 8.660156 19.203125 8.613281 19.171875 8.558594 19.136719 C 7.335938 18.351562 7.335938 18.351562 7.171875 18.1875 C 7.171875 18.09375 7.167969 18 7.171875 17.90625 C 7.257812 17.863281 7.339844 17.820312 7.421875 17.78125 C 7.476562 17.753906 7.527344 17.726562 7.582031 17.703125 C 7.671875 17.65625 7.761719 17.613281 7.855469 17.570312 C 8.101562 17.457031 8.3125 17.320312 8.527344 17.15625 C 8.566406 17.128906 8.566406 17.128906 8.605469 17.097656 C 8.789062 16.957031 8.925781 16.820312 8.972656 16.589844 C 8.96875 16.382812 8.953125 16.242188 8.8125 16.078125 C 8.621094 15.941406 8.457031 15.90625 8.230469 15.941406 C 8.019531 16.015625 7.863281 16.160156 7.691406 16.296875 C 7.160156 16.699219 6.503906 16.847656 5.859375 16.96875 C 5.808594 16.976562 5.761719 16.988281 5.710938 17 C 5.421875 16.949219 5.265625 16.746094 5.0625 16.546875 C 5.003906 16.492188 4.941406 16.441406 4.882812 16.390625 C 3.597656 15.265625 3.597656 15.265625 3.546875 14.765625 C 3.53125 14.355469 3.59375 14.101562 3.863281 13.792969 C 4.183594 13.515625 4.464844 13.441406 4.878906 13.347656 C 6.324219 13.003906 7.730469 12.367188 8.824219 11.335938 C 8.855469 11.308594 8.886719 11.277344 8.921875 11.246094 C 8.949219 11.21875 8.976562 11.195312 9.003906 11.167969 C 9.140625 11.082031 9.210938 11.085938 9.375 11.109375 Z M 9.375 11.109375 M 19.742188 2.585938 C 20.148438 2.960938 20.417969 3.488281 20.453125 4.039062 C 20.457031 4.109375 20.457031 4.179688 20.457031 4.25 C 20.457031 4.28125 20.457031 4.3125 20.460938 4.34375 C 20.453125 4.820312 20.25 5.230469 20.035156 5.644531 C 20.011719 5.695312 19.984375 5.746094 19.960938 5.796875 C 19.773438 6.160156 19.585938 6.523438 19.390625 6.886719 C 19.238281 7.175781 19.089844 7.464844 18.9375 7.757812 C 18.855469 7.917969 18.769531 8.082031 18.6875 8.242188 C 18.636719 8.335938 18.589844 8.429688 18.539062 8.523438 C 18.480469 8.640625 18.417969 8.757812 18.359375 8.875 C 18.339844 8.914062 18.320312 8.949219 18.300781 8.984375 C 18.160156 9.253906 18 9.511719 17.828125 9.765625 C 17.757812 9.886719 17.757812 9.886719 17.769531 10.007812 C 17.820312 10.144531 17.878906 10.261719 17.945312 10.390625 C 18.414062 11.300781 18.359375 12.292969 18.054688 13.242188 C 18.015625 13.359375 17.976562 13.476562 17.933594 13.59375 C 17.917969 13.628906 17.90625 13.667969 17.894531 13.707031 C 17.796875 13.953125 17.796875 13.953125 17.667969 14.015625 C 17.460938 14.015625 17.320312 13.925781 17.140625 13.832031 C 17.082031 13.800781 17.082031 13.800781 17.023438 13.773438 C 16.902344 13.707031 16.78125 13.644531 16.65625 13.578125 C 16.578125 13.539062 16.5 13.496094 16.417969 13.453125 C 16.21875 13.351562 16.019531 13.246094 15.824219 13.140625 C 15.625 13.039062 15.429688 12.933594 15.230469 12.828125 C 15.195312 12.808594 15.15625 12.789062 15.121094 12.769531 C 14.835938 12.621094 14.554688 12.476562 14.273438 12.328125 C 13.949219 12.160156 13.625 11.988281 13.300781 11.820312 C 12.9375 11.628906 12.574219 11.4375 12.210938 11.25 C 12.050781 11.167969 11.890625 11.082031 11.726562 11 C 11.632812 10.949219 11.539062 10.902344 11.441406 10.851562 C 10.707031 10.472656 10.707031 10.472656 10.421875 10.300781 C 10.390625 10.28125 10.359375 10.261719 10.328125 10.246094 C 10.265625 10.171875 10.265625 10.171875 10.238281 10.042969 C 10.277344 9.824219 10.398438 9.71875 10.554688 9.5625 C 10.609375 9.507812 10.664062 9.453125 10.71875 9.394531 C 10.757812 9.355469 10.757812 9.355469 10.800781 9.3125 C 10.871094 9.242188 10.933594 9.164062 10.996094 9.085938 C 11.46875 8.527344 12.316406 8.101562 13.03125 7.96875 C 13.105469 7.96875 13.175781 7.96875 13.25 7.96875 C 13.59375 7.972656 13.59375 7.972656 13.921875 7.875 C 14.136719 7.652344 14.230469 7.347656 14.339844 7.0625 C 14.414062 6.878906 14.507812 6.707031 14.605469 6.53125 C 14.644531 6.457031 14.683594 6.382812 14.722656 6.308594 C 14.742188 6.269531 14.765625 6.230469 14.785156 6.1875 C 14.921875 5.925781 15.058594 5.660156 15.195312 5.398438 C 15.246094 5.296875 15.296875 5.195312 15.351562 5.097656 C 15.5 4.804688 15.648438 4.515625 15.796875 4.226562 C 15.839844 4.136719 15.882812 4.050781 15.925781 3.964844 C 15.980469 3.859375 16.035156 3.757812 16.085938 3.652344 C 16.464844 2.914062 16.890625 2.394531 17.691406 2.117188 C 18.402344 1.9375 19.171875 2.125 19.742188 2.585938 Z M 19.742188 2.585938 M 6.109375 7.554688 C 6.355469 7.722656 6.566406 7.917969 6.632812 8.214844 C 6.679688 8.53125 6.636719 8.765625 6.464844 9.035156 C 6.285156 9.265625 6.101562 9.355469 5.820312 9.414062 C 5.507812 9.441406 5.289062 9.375 5.046875 9.179688 C 4.820312 8.960938 4.730469 8.753906 4.714844 8.441406 C 4.722656 8.167969 4.800781 7.957031 4.988281 7.757812 C 5.308594 7.472656 5.710938 7.414062 6.109375 7.554688 Z M 6.109375 7.554688 M 3.664062 10.484375 C 3.898438 10.652344 4.035156 10.824219 4.101562 11.105469 C 4.144531 11.402344 4.09375 11.609375 3.945312 11.871094 C 3.753906 12.109375 3.585938 12.226562 3.28125 12.28125 C 2.964844 12.296875 2.734375 12.226562 2.480469 12.035156 C 2.257812 11.832031 2.191406 11.617188 2.179688 11.320312 C 2.191406 11.039062 2.265625 10.824219 2.457031 10.617188 C 2.804688 10.308594 3.257812 10.25 3.664062 10.484375 Z M 3.664062 10.484375 "/>
+                                        </svg>
+                                    </button>
                                 </div>
-                                ${isAdmin ? `
                                 <div class="flex items-center space-x-2">
-                                    <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap text-right">Owner Search:</span>
-                                    <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg px-3 py-2 text-[10px] font-bold text-indigo-400 animate-pulse uppercase tracking-tighter">Enabled</div>
-                                </div>` : ''}
+                                    <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap text-right">${isAdmin ? 'Owner' : 'Project'} Search:</span>
+                                    <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg px-3 py-2 text-[10px] font-bold text-indigo-400 animate-pulse uppercase tracking-tighter">${isAdmin ? 'Enabled' : 'Active'}</div>
+                                </div>
                             </div>
                             <div id="tokens-list" class="space-y-4 min-h-[100px]">
                                 <p class="text-slate-500 italic text-center py-10">Fetching your registered services...</p>
@@ -1306,8 +1336,22 @@ if (IS_MASTER) {
                             
                             debounceSearch(val) {
                                 this.searchQuery = val;
+                                // Toggle clear button visibility if it exists
+                                const inputId = this.endpoint.includes('users') ? 'user-search' : 'token-search';
+                                const clearBtn = document.getElementById(inputId + '-clear');
+                                if (clearBtn) clearBtn.classList.toggle('hidden', !val);
+                                
                                 clearTimeout(this.timer);
                                 this.timer = setTimeout(() => this.fetch(true), 300);
+                            }
+
+                            clearSearch() {
+                                const inputId = this.endpoint.includes('users') ? 'user-search' : 'token-search';
+                                const input = document.getElementById(inputId);
+                                if (input) {
+                                    input.value = '';
+                                    this.debounceSearch('');
+                                }
                             }
 
                             setStatus(val) {
@@ -1344,24 +1388,43 @@ if (IS_MASTER) {
                             nextBtnId: 'token-next-btn',
                             render: (t) => {
                                 const publicUrl = window.location.origin + '/h/' + t.token;
+                                const projectName = t.metadata?.project_name || 'Default';
                                 return \`
-                                <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 flex justify-between items-start bg-slate-900/40 shadow-lg group/item">
-                                    <div class="flex-1 pr-4">
-                                        <div class="flex items-center space-x-2 mb-2">
-                                            <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Tunnel ID:</span>
-                                            <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
-                                            \${t.owner_name ? \`<span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Owner: \${t.owner_name}</span>\` : ''}
+                                <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 bg-slate-900/40 shadow-lg group/item">
+                                    <div class="flex-1">
+                                        <!-- Top Row: Project Branding & Action -->
+                                        <div class="flex items-center justify-between mb-3">
+                                            <div class="flex items-center space-x-2 flex-1 mr-4 overflow-hidden">
+                                                <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter whitespace-nowrap">\${isAdmin ? 'OWNER:' : 'PROJECT:'}</span>
+                                                \${isAdmin 
+                                                    ? \`<span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-bold">\${t.owner_name}</span>\`
+                                                    : \`<span class="text-sm font-bold text-indigo-300 hover:text-indigo-200 cursor-pointer flex items-center group/proj overflow-hidden" onclick="window.renameProject(this, '\${t.token}', '\${projectName}')">
+                                                       <span class="truncate">\${projectName}</span>
+                                                       <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 ml-2 flex-shrink-0 opacity-0 group-hover/proj:opacity-100 transition-opacity text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                                     </span>\`
+                                                }
+                                            </div>
+                                            <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:border-red-500/20 border border-transparent px-3 py-1.5 rounded-lg transition-all uppercase tracking-widest flex-shrink-0">Delete</button>
                                         </div>
+
+                                        <!-- Middle Row: Public URL -->
                                         <div class="mb-4">
                                             <div onclick="window.copySnippet(this)" class="bg-black/60 border border-slate-700/50 rounded-lg p-3 text-xs text-indigo-300 font-mono cursor-pointer hover:border-indigo-500/30 transition-all select-all">\${publicUrl}</div>
                                         </div>
-                                        <div class="flex items-center space-x-2">
-                                            <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Service:</span>
-                                            <p class="text-slate-400 text-xs italic font-mono">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
+
+                                        <!-- Bottom Row: Technical Metadata -->
+                                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-y-2 md:gap-y-0 text-[10px]">
+                                            <div class="flex items-center space-x-2">
+                                                <span class="uppercase font-black text-slate-600 tracking-tighter">TUNNEL ID:</span>
+                                                <code class="text-slate-500 font-mono italic">\${t.token}</code>
+                                            </div>
+                                            <div class="flex items-center space-x-2">
+                                                <span class="uppercase font-black text-slate-600 tracking-tighter">SERVICE:</span>
+                                                <p class="text-slate-500 italic font-mono">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
+                                            </div>
                                         </div>
                                     </div>
-                                    <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:border-red-500/20 border border-transparent px-3 py-1.5 rounded-lg transition-all uppercase tracking-widest mt-1">Delete</button>
-                                </div>\`
+                                </div>\`;
                             },
                              renderExtra: function(items) {
                                 if (isAdmin) return '';
@@ -1380,7 +1443,7 @@ if (IS_MASTER) {
                                                         <div class="flex items-center space-x-2 bg-black/40 px-3 py-1 rounded border border-slate-800">
                                                             <code class="text-[10px] text-indigo-400 font-mono italic">\${relayUrl}</code>
                                                         </div>
-                                                        <svg class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                                                         </svg>
                                                     </div>
@@ -1517,6 +1580,63 @@ if (IS_MASTER) {
                             window.showToast('Hook Removed', 'red');
                         };
 
+                        window.renameProject = async function(el, token, current) {
+                            if (el.querySelector('input')) return; // already editing
+                            const originalHTML = el.innerHTML;
+                            let isSaving = false;
+                            
+                            const input = document.createElement('input');
+                            input.type = 'text';
+                            input.value = current;
+                            input.maxLength = 50;
+                            input.className = 'bg-slate-950 border border-indigo-500/50 rounded px-2 py-0.5 text-sm text-indigo-300 outline-none w-full font-bold focus:ring-1 focus:ring-indigo-500';
+                            
+                            el.innerHTML = '';
+                            el.classList.add('flex-1'); // Take full width of parent's flex-1 mr-4
+                            el.appendChild(input);
+                            input.focus();
+                            input.select();
+
+                            const cleanup = () => { 
+                                el.classList.remove('flex-1');
+                                if (!isSaving) el.innerHTML = originalHTML; 
+                            };
+                            
+                            const save = async () => {
+                                if (isSaving) return;
+                                const newName = input.value.trim();
+                                if (!newName || newName === current) return cleanup();
+                                
+                                isSaving = true;
+                                try {
+                                    const res = await fetch(\`/dashboard/tokens/\${token}/project\`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ projectName: newName })
+                                    });
+                                    if (res.ok) {
+                                        window.showToast('Project Renamed');
+                                        window.tokenManager.fetch();
+                                    } else {
+                                        const err = await res.json();
+                                        window.showToast(err.error || 'Update failed', 'red');
+                                        isSaving = false;
+                                        cleanup();
+                                    }
+                                } catch (e) {
+                                    window.showToast(e.message, 'red');
+                                    isSaving = false;
+                                    cleanup();
+                                }
+                            };
+
+                            input.onblur = save;
+                            input.onkeydown = (e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); input.onblur = null; save(); }
+                                if (e.key === 'Escape') { e.preventDefault(); input.onblur = null; cleanup(); }
+                            };
+                        };
+
                         window.toggleApiKey = function() {
                             const el = document.getElementById('api-key-text');
                             el.style.webkitTextSecurity = el.style.webkitTextSecurity === 'disc' ? 'none' : 'disc';
@@ -1648,6 +1768,23 @@ if (IS_MASTER) {
     const user = req.user as PassportUser;
     const newKey = await redis.rotateUserApiKey(user.id);
     res.json({ api_key: newKey });
+  });
+
+  app.post("/dashboard/tokens/:token/project", requireAuth, async (req, res) => {
+    const { token } = req.params;
+    const { projectName } = req.body;
+    const user = req.user as PassportUser;
+
+    if (!projectName || projectName.length > 50) {
+      return res.status(400).json({ error: "Invalid project name" });
+    }
+
+    try {
+      await redis.updateTokenProject(token as string, user.id, projectName as string);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(403).json({ error: e.message });
+    }
   });
 
   app.delete("/dashboard/tokens/:token", requireAuth, async (req, res) => {
@@ -1805,17 +1942,31 @@ app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
     const metadata = await redis.getTokenMetadata(token);
     if (!metadata || metadata.status !== "active") return res.status(404).end();
 
+    // 1. BAN CHECK: Ensure the owner isn't banned
+    if (metadata.github_id) {
+        const isBanned = await redis.isUserBanned(metadata.github_id);
+        if (isBanned) return res.status(403).json({ error: "TUNNEL_SUSPENDED" });
+    }
+
+    // 2. RATE LIMITING: Simple 100 req / 10s per token
+    const rateKey = `ratelimit:${token}`;
+    const count = await redis.getClient().incr(rateKey);
+    if (count === 1) await redis.getClient().expire(rateKey, 10);
+    if (count > 100) return res.status(429).json({ error: "TOO_MANY_REQUESTS" });
+
     if (!metadata.public_key) {
       logger.error({ token }, "Terminal Error: Active hook missing public key");
       return res.status(500).json({
-        error: "SECURITY_VIOLATION: Missing public key for encryption",
+        error: "SECURITY_VIOLATION",
       });
     }
 
     // Try to parse as JSON if possible for a cleaner payload, otherwise send as raw string
     let data = req.body;
     try {
-      data = JSON.parse(req.body);
+      if (typeof req.body === 'string' && req.body.startsWith('{')) {
+          data = JSON.parse(req.body);
+      }
     } catch (e) {
       // Keep as string
     }
@@ -1835,7 +1986,7 @@ app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
       .filter((id) => bridgeConnections.has(id));
 
     if (activeIds.length === 0)
-      return res.status(503).json({ error: "No bridges" });
+      return res.status(503).json({ error: "NO_BRIDGES_AVAILABLE" });
 
     const selectedId = activeIds[Math.floor(Math.random() * activeIds.length)];
     const ws = bridgeConnections.get(selectedId);
@@ -1856,7 +2007,7 @@ app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
     );
     res
       .status(500)
-      .json({ error: "Internal Relay Error", detail: err.message });
+      .json({ error: "RELAY_INTERNAL_ERROR" });
   }
 });
 
