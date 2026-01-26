@@ -81,8 +81,149 @@ export class RedisService {
         await this.client.hSet(`token:${token}`, metadata as any);
         if (metadata.github_id) {
             await this.client.sAdd(`user_tokens:${metadata.github_id}`, token);
+            // Track the user in the global user list
+            await this.client.sAdd('all_users', metadata.github_id);
         }
         await this.client.sAdd('all_tokens', token);
+    }
+
+    async getAllUsers(): Promise<{github_id: string, username: string, hook_count: number, is_banned: boolean}[]> {
+        const userIds = await this.client.sMembers('all_users');
+        const result = [];
+        for (const id of userIds) {
+            const username = await this.client.get(`username:${id}`) || 'Unknown';
+            
+            // Accurate Hook Count & Cleanup
+            const tokens = await this.client.sMembers(`user_tokens:${id}`);
+            let validCount = 0;
+            for (const t of tokens) {
+                if (await this.client.exists(`token:${t}`)) {
+                    validCount++;
+                } else {
+                    await this.client.sRem(`user_tokens:${id}`, t);
+                }
+            }
+
+            const isBanned = Boolean(await this.client.sIsMember('banned_users', id));
+            result.push({ github_id: id, username, hook_count: validCount, is_banned: isBanned });
+        }
+        return result;
+    }
+
+    async getPaginatedUsers(page: number, limit: number, search: string = '', status: string = 'all'): Promise<{ users: any[], total: number }> {
+        // Optimization: For "millions", this should rely on a search index (RediSearch)
+        // For now, we fetch IDs and filter in memory (acceptable for < 100k)
+        const allIds = await this.client.sMembers('all_users');
+        let filteredUsers = [];
+        
+        for (const id of allIds) {
+            const username = await this.client.get(`username:${id}`) || 'Unknown';
+            const isBanned = Boolean(await this.client.sIsMember('banned_users', id));
+
+            // Status Filter Logic
+            if (status === 'banned' && !isBanned) continue;
+            if (status === 'active' && isBanned) continue;
+
+            // Search Logic (Username or ID)
+            if (search && !username.toLowerCase().includes(search.toLowerCase()) && !id.includes(search)) {
+                continue;
+            }
+            
+            // Accurate Hook Count (Verifies existence and cleans up ghosts)
+            const tokens = await this.client.sMembers(`user_tokens:${id}`);
+            let validTokens = [];
+            for (const t of tokens) {
+                const exists = await this.client.exists(`token:${t}`);
+                if (exists) {
+                    validTokens.push(t);
+                } else {
+                    // Self-healing: Remove ghost token from user set
+                    await this.client.sRem(`user_tokens:${id}`, t);
+                }
+            }
+            
+            const hookCount = validTokens.length;
+            filteredUsers.push({ github_id: id, username, hook_count: hookCount, is_banned: isBanned });
+        }
+
+        // Sort by username
+        filteredUsers.sort((a, b) => a.username.localeCompare(b.username));
+
+        const total = filteredUsers.length;
+        const start = (page - 1) * limit;
+        const paginated = filteredUsers.slice(start, start + limit);
+
+        return { users: paginated, total };
+    }
+
+    async setUserBanStatus(githubId: string, ban: boolean) {
+        if (ban) {
+            await this.client.sAdd('banned_users', githubId);
+            // Optional: Immediately revoke their session or tokens?
+            // For now, middleware in index.ts should check this set
+        } else {
+            await this.client.sRem('banned_users', githubId);
+        }
+    }
+
+    async isUserBanned(githubId: string): Promise<boolean> {
+        return Boolean(await this.client.sIsMember('banned_users', githubId));
+    }
+    
+    async getPaginatedTokens(userId: string | null, page: number, limit: number, search: string = ''): Promise<{ tokens: any[], total: number }> {
+        // userId null means ALL tokens (Admin view)
+        let tokenIds: string[] = [];
+        if (userId) {
+            tokenIds = await this.client.sMembers(`user_tokens:${userId}`);
+        } else {
+            tokenIds = await this.client.sMembers('all_tokens');
+        }
+
+        let filteredTokens: any[] = [];
+        for (const tid of tokenIds) {
+            const meta = await this.getTokenMetadata(tid);
+            if (!meta) {
+                // Self-healing: Remove ghost from appropriate sets
+                if (userId) await this.client.sRem(`user_tokens:${userId}`, tid);
+                await this.client.sRem('all_tokens', tid);
+                continue;
+            }
+
+            // Add owner username for Admin View
+            let ownerName = 'Anonymous';
+            if (meta.github_id) {
+                ownerName = await this.client.get(`username:${meta.github_id}`) || meta.github_id;
+            }
+
+            if (search) {
+                const searchLower = search.toLowerCase();
+                const matches = tid.includes(search) || 
+                                meta.onion_service_id.includes(searchLower) || 
+                                ownerName.toLowerCase().includes(searchLower) ||
+                                (meta.github_id && meta.github_id.toString().includes(search));
+                if (!matches) continue;
+            }
+
+            filteredTokens.push({
+                metadata: meta,
+                token: tid,
+                owner_name: ownerName
+            });
+        }
+
+        // Sort by creation date (newest first)
+        filteredTokens.sort((a, b) => parseInt(b.metadata.created_at) - parseInt(a.metadata.created_at));
+
+        const total = filteredTokens.length;
+        const start = (page - 1) * limit;
+        const result = filteredTokens.slice(start, start + limit);
+        
+        return { tokens: result, total };
+    }
+
+    async saveUsername(githubId: string, username: string) {
+        await this.client.set(`username:${githubId}`, username);
+        await this.client.sAdd('all_users', githubId);
     }
 
     async getUserTokens(githubId: string): Promise<{token: string, metadata: TokenMetadata}[]> {
@@ -144,11 +285,37 @@ export class RedisService {
     }
 
     async deleteToken(token: string, githubId?: string) {
+        const meta = await this.getTokenMetadata(token);
+        const ownerId = githubId || meta?.github_id;
+        
         await this.client.del(`token:${token}`);
         await this.client.sRem('all_tokens', token);
-        if (githubId) {
-            await this.client.sRem(`user_tokens:${githubId}`, token);
+        
+        if (ownerId) {
+            await this.client.sRem(`user_tokens:${ownerId}`, token);
         }
+    }
+
+    async deleteUser(githubId: string) {
+        // 1. Delete all tokens associated with the user
+        const tokens = await this.client.sMembers(`user_tokens:${githubId}`);
+        for (const token of tokens) {
+            await this.deleteToken(token, githubId);
+        }
+        
+        // 2. Delete user's API keys
+        const apiKey = await this.client.get(`api_key:${githubId}`);
+        if (apiKey) {
+            await this.client.del(`api_key_owner:${apiKey}`);
+            await this.client.del(`api_key:${githubId}`);
+        }
+        
+        // 3. Delete MFA data and username
+        await this.client.del(`user_mfa:${githubId}`);
+        await this.client.del(`username:${githubId}`);
+        
+        // 4. Remove from global user list
+        await this.client.sRem('all_users', githubId);
     }
 
     async updateBridgeHeartbeat(heartbeat: BridgeHeartbeat) {

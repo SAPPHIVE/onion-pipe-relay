@@ -86,6 +86,7 @@ app.use((req, res, next) => {
     const currentFingerprint = getFingerprint(req);
     if (!(req.session as any).fingerprint) {
       (req.session as any).fingerprint = currentFingerprint;
+      logger.debug({ fp: currentFingerprint }, "New session fingerprint assigned");
     } else if ((req.session as any).fingerprint !== currentFingerprint) {
       const oldFp = (req.session as any).fingerprint;
       logger.warn(
@@ -121,6 +122,27 @@ app.use((req, res, next) => {
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Ban Enforcement Middleware
+app.use(async (req, res, next) => {
+    if (req.isAuthenticated() && req.user) {
+        const user = req.user as any;
+        // Check ban status for non-admin users
+        if (user.id !== 'admin' && !user.isAdmin) {
+             const isBanned = await redis.isUserBanned(user.id);
+             if (isBanned) {
+                 return req.logout(() => {
+                     res.clearCookie("op-sid");
+                     if (req.xhr || req.path.startsWith("/api/") || req.headers.accept?.includes('json')) {
+                         return res.status(403).json({ error: "Your account has been suspended by the administrator." });
+                     }
+                     return res.redirect("/login?error=banned"); // Assuming login page handles this param
+                 });
+             }
+        }
+    }
+    next();
+});
+
 const bridgeConnections = new Map<string, WebSocket>();
 const PORT = process.env.PORT || 3000;
 
@@ -139,6 +161,7 @@ if (IS_MASTER) {
   // Admin Local Strategy
   passport.use(
     new LocalStrategy((username, password, done) => {
+      logger.debug({ received_user: username, expected_user: ADMIN_USER }, "Login attempt check");
       if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
         return done(null, {
           id: "admin",
@@ -146,7 +169,8 @@ if (IS_MASTER) {
           isAdmin: true,
         });
       }
-      return done(null, false, { message: "Invalid credentials" });
+      logger.warn({ received_user: username }, "Invalid admin login attempt");
+      return done(null, false, { message: "Invalid Credentials" });
     }),
   );
 
@@ -159,12 +183,21 @@ if (IS_MASTER) {
           clientSecret: githubClientSecret,
           callbackURL: `${process.env.PUBLIC_RELAY_URL}/auth/github/callback`,
         },
-        (
+        async (
           accessToken: string,
           refreshToken: string,
           profile: any,
           done: any,
         ) => {
+          // Track the user in Redis and save their username
+          await redis.saveUsername(profile.id, profile.username);
+
+          // Check if user is banned
+          const isBanned = await redis.isUserBanned(profile.id);
+          if (isBanned) {
+            return done(null, false, { message: "Account Banned" });
+          }
+          
           return done(null, {
             id: profile.id,
             username: profile.username,
@@ -181,11 +214,13 @@ if (IS_MASTER) {
 }
 
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
+  logger.debug({ path: req.path, auth: req.isAuthenticated(), user: !!req.user }, "requireAuth check");
   if (req.isAuthenticated() && req.user) {
     const mfa = await redis.getUserMfa(req.user.id);
     const needsMfa = mfa.totp_enabled || mfa.webauthn_credentials.length > 0;
 
     if (needsMfa && !(req.session as any).mfa_verified) {
+      logger.debug({ user: req.user.id }, "MFA Required but not verified");
       const isApi =
         req.xhr ||
         req.headers.accept?.includes("application/json") ||
@@ -231,6 +266,13 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   }
 
   res.redirect("/login");
+};
+
+const isAdmin = (req: Request, res: Response, next: NextFunction) => {
+    if (req.isAuthenticated() && (req.user as any).isAdmin) {
+        return next();
+    }
+    res.status(403).json({ error: "Access denied" });
 };
 
 app.get("/mfa-challenge", (req, res) => {
@@ -446,6 +488,26 @@ if (IS_MASTER) {
     // Check for CLI auth intent in session or query param
     const isCli = (req.session as any).isCliAuth === true || req.query.cli === "true";
 
+    const errorHtml = req.query.error === 'banned' 
+        ? `<div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 mb-6 text-center">
+             <div class="flex items-center justify-center space-x-2 text-red-500 mb-1">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                <span class="text-sm font-bold uppercase tracking-widest">Account Suspended</span>
+             </div>
+             <p class="text-xs text-red-400/80 uppercase tracking-tighter leading-tight mx-auto">Contact system administrator.</p>
+           </div>`
+        : req.query.error === 'hijack'
+            ? `<div class="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 mb-6 text-center">
+                 <div class="flex items-center justify-center space-x-2 text-amber-500 mb-1">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                    <span class="text-sm font-bold uppercase tracking-widest">Session Mismatch</span>
+                 </div>
+                 <p class="text-xs text-amber-400/80 uppercase tracking-tighter leading-tight mx-auto">Security mismatch. Please re-authenticate.</p>
+               </div>`
+        : req.query.error 
+            ? `<p class="text-red-400 text-sm text-center py-2 mb-4 bg-red-500/5 border border-red-500/10 rounded-lg font-medium">Invalid Credentials</p>` 
+            : "";
+
     if (req.isAuthenticated()) {
         if (isCli) {
              return res.redirect("/cli-auth");
@@ -502,6 +564,8 @@ if (IS_MASTER) {
                     </div>
                     <h1 class="text-2xl font-bold mb-6 text-center">Secure Access</h1>
                     
+                    ${errorHtml}
+
                     <div class="space-y-4">
                         <a href="/auth/github${isCli ? '?cli=true' : ''}" 
                            class="flex items-center justify-center space-x-3 w-full bg-white hover:bg-slate-100 text-slate-900 py-3 rounded-lg font-bold transition duration-200">
@@ -525,7 +589,6 @@ if (IS_MASTER) {
                                 class="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-lg font-bold border border-slate-700 transition duration-200">
                                 Admin Entry
                             </button>
-                            ${req.query.error ? '<p class="text-red-400 text-sm text-center">Invalid credentials</p>' : ""}
                         </form>
                     </div>
                 </div>
@@ -556,7 +619,22 @@ if (IS_MASTER) {
         }
         next();
     },
-    passport.authenticate("github", { failureRedirect: "/login" }),
+    (req, res, next) => {
+        passport.authenticate("github", (err: any, user: any, info: any) => {
+            if (err) return next(err);
+            if (!user) {
+                const message = info?.message || "";
+                if (message === "Account Banned") {
+                    return res.redirect("/login?error=banned");
+                }
+                return res.redirect("/login?error=true");
+            }
+            req.logIn(user, (err) => {
+                if (err) return next(err);
+                next();
+            });
+        })(req, res, next);
+    },
     async (req, res) => {
       // Check if MFA is required FIRST
       if (req.user) {
@@ -752,6 +830,39 @@ if (IS_MASTER) {
     });
   });
 
+  // --- Admin API Endpoints ---
+  app.get("/dashboard/admin/users", isAdmin, async (req, res) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const search = (req.query.search as string) || '';
+      const status = (req.query.status as string) || 'all';
+      const result = await redis.getPaginatedUsers(page, limit, search, status);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to fetch users: ' + err.message });
+    }
+  });
+
+  app.post("/dashboard/admin/users/:id/status", isAdmin, async (req, res) => {
+    try {
+        const { status } = req.body;
+        await redis.setUserBanStatus(req.params.id as string, status === 'banned');
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: 'Failed to update status: ' + err.message });
+    }
+  });
+
+  app.delete("/dashboard/admin/users/:id", isAdmin, async (req, res) => {
+    try {
+      await redis.deleteUser(req.params.id as string);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to delete user: ' + err.message });
+    }
+  });
+
   app.get("/dashboard", requireAuth, async (req, res) => {
     const isAdmin = req.user?.isAdmin;
     const user = req.user as PassportUser;
@@ -896,6 +1007,52 @@ if (IS_MASTER) {
                             <pre id="nodes" class="bg-slate-950 p-4 rounded-xl border border-slate-800 overflow-x-auto text-indigo-400 text-sm font-mono min-h-[100px]">Loading bridge telemetry...</pre>
                         </div>
                     </div>
+
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-8">
+                        <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-indigo-500/5">
+                            <h2 class="font-bold text-lg">User Management (Admin Only)</h2>
+                            <button onclick="window.userManager.fetch()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh</button>
+                        </div>
+                        <div class="p-6">
+                            <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 mb-6">
+                                <div class="relative flex-1">
+                                    <input type="text" id="user-search" placeholder="Search users by name or ID..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all" onkeyup="window.userManager.debounceSearch(this.value)">
+                                    <i class="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap">Filter:</span>
+                                    <select onchange="window.userManager.setStatus(this.value)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer">
+                                        <option value="all">All Users</option>
+                                        <option value="active">Active Only</option>
+                                        <option value="banned">Banned Only</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm text-left">
+                                    <thead class="text-xs text-slate-500 uppercase font-bold border-b border-slate-800">
+                                        <tr>
+                                            <th class="px-4 py-3">GitHub ID</th>
+                                            <th class="px-4 py-3">Username</th>
+                                            <th class="px-4 py-3 text-center">Hooks</th>
+                                            <th class="px-4 py-3 text-center">Status</th>
+                                            <th class="px-4 py-3 text-right">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="users-list-body" class="divide-y divide-slate-800">
+                                        <tr><td colspan="5" class="px-4 py-10 text-center italic text-slate-500">Loading users...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="mt-4 flex justify-between items-center text-xs text-slate-500 border-t border-slate-800 pt-4">
+                                <span id="user-pagination-info">Showing users...</span>
+                                <div class="flex space-x-2">
+                                    <button onclick="window.userManager.prevPage()" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded disabled:opacity-50" id="user-prev-btn">Prev</button>
+                                    <button onclick="window.userManager.nextPage()" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded disabled:opacity-50" id="user-next-btn">Next</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     `
                         : ""
                     }
@@ -905,7 +1062,7 @@ if (IS_MASTER) {
                             <h2 class="font-bold text-lg">${isAdmin ? "All Registered Hooks" : "Your Managed Hooks"}</h2>
                             <div class="flex space-x-2">
                                 ${!isAdmin ? `<button onclick="window.showAddHook()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">+ Add New Hook</button>` : ""}
-                                <button onclick="window.refreshTokens()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Hooks</button>
+                                <button onclick="window.tokenManager.fetch()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-md transition font-medium uppercase tracking-wider">Refresh Hooks</button>
                             </div>
                         </div>
 
@@ -929,8 +1086,26 @@ if (IS_MASTER) {
                         </div>
 
                         <div class="p-6">
-                            <div id="tokens-list" class="space-y-4">
+                            <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 mb-6">
+                                <div class="relative flex-1">
+                                    <input type="text" placeholder="Search hooks by ID or Owner..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all" onkeyup="window.tokenManager.debounceSearch(this.value)">
+                                    <i class="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                </div>
+                                ${isAdmin ? `
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap text-right">Owner Search:</span>
+                                    <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg px-3 py-2 text-[10px] font-bold text-indigo-400 animate-pulse uppercase tracking-tighter">Enabled</div>
+                                </div>` : ''}
+                            </div>
+                            <div id="tokens-list" class="space-y-4 min-h-[100px]">
                                 <p class="text-slate-500 italic text-center py-10">Fetching your registered services...</p>
+                            </div>
+                            <div class="mt-8 flex justify-between items-center text-xs text-slate-500 border-t border-slate-800 pt-4">
+                                <span id="token-pagination-info">Page 1</span>
+                                <div class="flex space-x-2">
+                                    <button onclick="window.tokenManager.prevPage()" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded disabled:opacity-50" id="token-prev-btn">Prev</button>
+                                    <button onclick="window.tokenManager.nextPage()" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded disabled:opacity-50" id="token-next-btn">Next</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1035,25 +1210,141 @@ if (IS_MASTER) {
                             } catch (e) { pre.innerText = "Error: " + e.message; }
                         };
 
-                        window.refreshTokens = async function() {
-                            const list = document.getElementById('tokens-list');
-                            if (!list) return;
-                            try {
-                                const res = await fetch('/dashboard/tokens');
-                                const data = await res.json();
-                                
-                                const apiKey = document.getElementById('api-key-text')?.dataset.key || '<your-api-key>';
-                                const relayUrl = window.location.origin;
 
-                                let setupHtml = '';
-                                if (!isAdmin) {
-                                    setupHtml = \`
-                                        <div id="quick-setup-container" class="\${data.length > 0 ? 'mb-8' : 'mb-12 text-left'}">
-                                            <details \${data.length === 0 ? 'open' : ''} class="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl group">
+                        class TableManager {
+                            constructor(cfg) {
+                                this.endpoint = cfg.endpoint;
+                                this.render = cfg.render;
+                                this.renderExtra = cfg.renderExtra;
+                                this.listContainer = document.getElementById(cfg.listId);
+                                this.paginationInfo = document.getElementById(cfg.paginationId);
+                                this.prevBtn = document.getElementById(cfg.prevBtnId);
+                                this.nextBtn = document.getElementById(cfg.nextBtnId);
+                                this.page = 1;
+                                this.limit = 10;
+                                this.searchQuery = '';
+                                this.statusFilter = 'all';
+                                this.timer = null;
+                            }
+
+                            async fetch(resetPage = false) {
+                                if (resetPage) this.page = 1;
+                                if (!this.listContainer) return;
+
+                                const url = \`\${this.endpoint}?page=\${this.page}&limit=\${this.limit}&search=\${encodeURIComponent(this.searchQuery)}&status=\${this.statusFilter}\`;
+
+                                try {
+                                    const res = await fetch(url);
+                                    const data = await res.json();
+                                    
+                                    const items = data.users || data.tokens || data; 
+                                    const total = data.total !== undefined ? data.total : items.length;
+
+                                    if (this.render) {
+                                        let content = '';
+                                        if (this.renderExtra) content += this.renderExtra(items);
+
+                                        if (items.length === 0 && !this.renderExtra) { 
+                                            // Only show generic empty state if renderExtra didn't handle it
+                                            content += this.getEmptyState();
+                                        } else {
+                                            content += items.map(this.render).join('');
+                                        }
+                                        this.listContainer.innerHTML = content;
+                                    }
+                                    
+                                    this.updatePagination(total);
+                                } catch (e) {
+                                    this.listContainer.innerHTML = \`<div class="text-center py-4 text-red-400">Error: \${e.message}</div>\`;
+                                }
+                            }
+
+                            getEmptyState() {
+                                return '<div class="text-center py-8 text-slate-500 italic">No results found</div>';
+                            }
+
+                            updatePagination(total) {
+                                if (!this.paginationInfo) return;
+                                const totalPages = Math.ceil(total / this.limit) || 1;
+                                this.paginationInfo.innerText = \`Page \${this.page} of \${totalPages} (\${total} total)\`;
+                                this.prevBtn.disabled = this.page <= 1;
+                                this.nextBtn.disabled = this.page >= totalPages;
+                            }
+                            
+                            nextPage() { this.page++; this.fetch(); }
+                            prevPage() { if (this.page > 1) this.page--; this.fetch(); }
+                            
+                            debounceSearch(val) {
+                                this.searchQuery = val;
+                                clearTimeout(this.timer);
+                                this.timer = setTimeout(() => this.fetch(true), 300);
+                            }
+
+                            setStatus(val) {
+                                this.statusFilter = val;
+                                this.fetch(true);
+                            }
+                        }
+
+                        // Initialize Managers
+                        window.userManager = new TableManager({
+                            endpoint: '/dashboard/admin/users',
+                            listId: 'users-list-body',
+                            paginationId: 'user-pagination-info',
+                            prevBtnId: 'user-prev-btn',
+                            nextBtnId: 'user-next-btn',
+                            render: (u) => \`
+                                <tr class="hover:bg-slate-800/30 transition-colors">
+                                    <td class="px-4 py-3 font-mono text-xs text-slate-400">\${u.github_id}</td>
+                                    <td class="px-4 py-3 font-bold text-indigo-300">\${u.username}</td>
+                                    <td class="px-4 py-3 text-center">\${u.hook_count || 0}</td>
+                                    <td class="px-4 py-3 text-center text-[10px] uppercase font-bold \${u.is_banned ? 'text-red-500' : 'text-green-500'}">\${u.is_banned ? 'BANNED' : 'ACTIVE'}</td>
+                                    <td class="px-4 py-3 text-right space-x-2">
+                                        <button onclick="window.toggleBan('\${u.github_id}', \${!u.is_banned})" class="text-xs uppercase font-bold tracking-wider \${u.is_banned ? 'text-green-400 hover:text-green-300' : 'text-amber-400 hover:text-amber-300'}">\${u.is_banned ? 'Unban' : 'Ban'}</button>
+                                        <button onclick="window.deleteUser('\${u.github_id}', '\${u.username}')" class="text-red-400 hover:text-red-300 text-xs font-bold uppercase tracking-wider">Delete</button>
+                                    </td>
+                                </tr>\`
+                        });
+
+                        window.tokenManager = new TableManager({
+                            endpoint: '/dashboard/tokens',
+                            listId: 'tokens-list',
+                            paginationId: 'token-pagination-info',
+                            prevBtnId: 'token-prev-btn',
+                            nextBtnId: 'token-next-btn',
+                            render: (t) => {
+                                const publicUrl = window.location.origin + '/h/' + t.token;
+                                return \`
+                                <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 flex justify-between items-start bg-slate-900/40 shadow-lg group/item">
+                                    <div class="flex-1 pr-4">
+                                        <div class="flex items-center space-x-2 mb-2">
+                                            <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Tunnel ID:</span>
+                                            <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
+                                            \${t.owner_name ? \`<span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Owner: \${t.owner_name}</span>\` : ''}
+                                        </div>
+                                        <div class="mb-4">
+                                            <div onclick="window.copySnippet(this)" class="bg-black/60 border border-slate-700/50 rounded-lg p-3 text-xs text-indigo-300 font-mono cursor-pointer hover:border-indigo-500/30 transition-all select-all">\${publicUrl}</div>
+                                        </div>
+                                        <div class="flex items-center space-x-2">
+                                            <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Service:</span>
+                                            <p class="text-slate-400 text-xs italic font-mono">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
+                                        </div>
+                                    </div>
+                                    <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:border-red-500/20 border border-transparent px-3 py-1.5 rounded-lg transition-all uppercase tracking-widest mt-1">Delete</button>
+                                </div>\`
+                            },
+                             renderExtra: function(items) {
+                                if (isAdmin) return '';
+                                const apiKey = document.getElementById('api-key-text')?.dataset.key || '<your-api-key>';
+                                const hasItems = items && items.length > 0;
+                                const relayUrl = window.location.origin;
+                                return \`
+                                        <div id="quick-setup-container" class="\${hasItems ? 'mb-8' : 'mb-12 text-left'}">
+                                            <details \${!hasItems ? 'open' : ''} class="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl group">
                                                 <summary class="bg-indigo-500/10 px-6 py-4 border-b border-slate-800 flex justify-between items-center cursor-pointer hover:bg-indigo-500/20 transition-colors list-none">
                                                     <div class="flex items-center space-x-3">
                                                         <h3 class="text-sm font-bold text-indigo-300 uppercase tracking-widest">Quick Setup Guide</h3>
-                                                        \${data.length === 0 ? '<span class="px-2 py-0.5 bg-indigo-500 text-[10px] font-bold rounded animate-pulse">RECOMMENDED</span>' : ''}
+                                                        \${!hasItems ? '<span class="px-2 py-0.5 bg-indigo-500 text-[10px] font-bold rounded animate-pulse">RECOMMENDED</span>' : ''}
                                                     </div>
                                                     <div class="flex items-center space-x-4">
                                                         <div class="flex items-center space-x-2 bg-black/40 px-3 py-1 rounded border border-slate-800">
@@ -1097,7 +1388,7 @@ if (IS_MASTER) {
                                                                     Step 2: Deployment (Single Line)
                                                                 </p>
                                                                 <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 break-all select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
-                                                                    docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span>
+                                                                    docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e RELAY_URL="\${relayUrl}" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span>
                                                                 </div>
                                                                 <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
                                                                     Note: FORWARD_DEST should point to your local application endpoint (e.g., localhost:8080) or another Docker container's name/IP if your app is also containerized.
@@ -1120,6 +1411,7 @@ if (IS_MASTER) {
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- ./onion_id:/var/lib/tor/hidden_service</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">environment:</span></div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">API_TOKEN:</span> "<span class="text-white font-bold">\${apiKey}</span>"</div>
+                                                                    <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">RELAY_URL:</span> "\${relayUrl}"</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">FORWARD_DEST:</span> http://host.docker.internal:8080</div>
                                                                 </div>
                                                                 <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
@@ -1160,62 +1452,38 @@ if (IS_MASTER) {
                                                     </div>
                                                 </div>
                                             </details>
-                                        </div>
-                                    \`;
-                                }
+                                        </div>\`;
+                            }
+                        });
 
-                                if (!data.length) {
-                                    list.innerHTML = \`
-                                        <div class="text-center py-6">
-                                            <div class="mb-12 p-6 bg-amber-500/5 border border-amber-500/20 rounded-xl text-center">
-                                                <p class="text-amber-200/70 text-sm">
-                                                    <i class="fas fa-info-circle mr-2 text-amber-500"></i> No hooks found. Setup your client below to get started. Your onion address will appear here automatically once connected.
-                                                </p>
-                                            </div>
-                                            \${setupHtml}
-                                        </div>
-                                    \`;
-                                } else {
-                                    list.innerHTML = setupHtml + data.map(t => {
-                                        const publicUrl = relayUrl + '/h/' + t.token;
-                                        return \`
-                                        <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 flex justify-between items-start bg-slate-900/40 shadow-lg group/item">
-                                            <div class="flex-1 pr-4">
-                                                <div class="flex items-center space-x-2 mb-2">
-                                                    <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Tunnel ID:</span>
-                                                    <code class="text-indigo-400 text-xs font-bold">\${t.token}</code>
-                                                </div>
-                                                
-                                                <div class="mb-4">
-                                                    <p class="text-[10px] uppercase font-black text-slate-500 tracking-tighter mb-1">Public Webhook URL (E2E Encrypted):</p>
-                                                    <div onclick="window.copySnippet(this)" class="bg-black/60 border border-slate-700/50 rounded-lg p-3 text-xs text-indigo-300 font-mono cursor-pointer hover:border-indigo-500/30 transition-all select-all group relative overflow-hidden">
-                                                        \${publicUrl}
-                                                        <div class="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 012-2v-8a2 2 0 01-2-2h-8a2 2 0 01-2 2v8a2 2 0 012 2z" />
-                                                            </svg>
-                                                        </div>
-                                                    </div>
-                                                </div>
+                        window.refreshUsers = () => window.userManager.fetch();
+                        window.refreshTokens = () => window.tokenManager.fetch();
 
-                                                <div class="flex items-center space-x-2">
-                                                    <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter">Service:</span>
-                                                    <p class="text-slate-400 text-xs italic font-mono">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
-                                                </div>
-                                            </div>
-                                            <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:bg-red-500 hover:text-white px-3 py-1.5 rounded-lg border border-red-500/20 transition-all uppercase tracking-widest mt-1">Delete</button>
-                                        </div>
-                                    \`;
-                                    }).join('');
-                                }
-                            } catch (e) { list.innerText = "Error: " + e.message; }
+                        window.toggleBan = async function(id, ban) {
+                            if (!await window.confirmModal('Update Status', \`Are you sure you want to \${ban ? 'BAN' : 'UNBAN'} this user?\`)) return;
+                            await fetch(\`/dashboard/admin/users/\${id}/status\`, { 
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ status: ban ? 'banned' : 'active' })
+                            });
+                             window.userManager.fetch();
                         };
 
+                        window.deleteUser = async function(id, username) {
+                            if (!await window.confirmModal('Delete User', \`Are you sure you want to delete user \${username}? This will remove all their tokens and keys.\`)) return;
+                            try {
+                                const res = await fetch(\`/dashboard/admin/users/\${id}\`, { method: 'DELETE' });
+                                if (res.ok) {
+                                    window.showToast(\`User \${username} deleted\`, 'red');
+                                    window.userManager.fetch();
+                                }
+                            } catch (e) { window.showToast(e.message, 'red'); }
+                        };
 
                         window.deleteToken = async function(token) {
                             if (!await window.confirmModal('Delete Hook', 'Permanently remove this mapping?')) return;
                             await fetch('/dashboard/tokens/' + token, { method: 'DELETE' });
-                            window.refreshTokens();
+                            window.tokenManager.fetch();
                             window.showToast('Hook Removed', 'red');
                         };
 
@@ -1304,7 +1572,10 @@ if (IS_MASTER) {
                         // Initialize
                         window.refreshMfaStatus();
                         window.refreshTokens();
-                        if (isAdmin) window.refreshNodes();
+                        if (isAdmin) {
+                            window.refreshNodes();
+                            window.refreshUsers();
+                        }
                     })();
                 </script>
             </body>
@@ -1322,13 +1593,21 @@ if (IS_MASTER) {
   app.get("/dashboard/tokens", requireAuth, async (req, res) => {
     const isAdmin = req.user?.isAdmin;
     const user = req.user as PassportUser;
+    
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const search = (req.query.search as string) || '';
 
-    if (isAdmin) {
-      const tokens = await redis.getAllTokens();
-      return res.json(tokens);
-    } else {
-      const tokens = await redis.getUserTokens(user.id);
-      return res.json(tokens);
+    try {
+        if (isAdmin) {
+          const result = await redis.getPaginatedTokens(null, page, limit, search);
+          return res.json(result);
+        } else {
+          const result = await redis.getPaginatedTokens(user.id, page, limit, search);
+          return res.json(result);
+        }
+    } catch (e) {
+        res.status(500).json({ error: "Failed to fetch tokens" });
     }
   });
 
@@ -1402,13 +1681,22 @@ wss.on("connection", (ws, req) => {
 });
 
 app.post("/register", async (req, res) => {
-  const {
+  let {
     onion_service_id,
     public_key,
     registration_secret,
     github_id,
     token: apiKey,
   } = req.body;
+
+  // Clean inputs
+  if (onion_service_id) onion_service_id = onion_service_id.trim();
+  if (public_key) public_key = public_key.trim();
+  if (apiKey) apiKey = apiKey.trim();
+
+  if (!onion_service_id) {
+    return res.status(400).json({ error: "MISSING_ONION_ID: Registration failed because no Onion address was provided." });
+  }
 
   if (!public_key) {
     return res
@@ -1419,7 +1707,7 @@ app.post("/register", async (req, res) => {
       });
   }
 
-  let targetUserId = null;
+  let targetUserId: string | null = null;
 
   // 1. If an API Key (token) is provided, validate it
   if (apiKey) {
@@ -1466,7 +1754,7 @@ app.post("/register", async (req, res) => {
     public_key,
     status: "active",
     created_at: Math.floor(Date.now() / 1000).toString(),
-    github_id: finalUserId
+    github_id: finalUserId || undefined
   };
 
   await redis.setTokenMetadata(token, metadata);

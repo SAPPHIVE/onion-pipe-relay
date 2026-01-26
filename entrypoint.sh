@@ -38,7 +38,7 @@ fi
 # --- MASTER MODE LOGIC ---
 if [ "$MASTER" = "true" ]; then
     echo "👑 Mode: Master Controller"
-    export NODE_ENV=production
+    export NODE_ENV=${NODE_ENV:-production}
     # We might need redis here if not external
     exec su-exec node node dist/relay/index.js
 fi

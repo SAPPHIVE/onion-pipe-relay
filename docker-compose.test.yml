@@ -1,0 +1,86 @@
+services:
+  # --- PERSISTENT STORAGE ---
+  redis:
+    container_name: onion-pipe-redis-test
+    image: redis:alpine
+    restart: always
+    command: ["sh", "-c", "redis-server --appendonly yes --save 60 1 --requirepass \"$$(tr -d '\\r' < /run/secrets/redis_password)\""]
+    volumes:
+      - redis_test_data:/data
+    networks:
+      - onion-net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(tr -d '\\r' < /run/secrets/redis_password)\" ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    secrets:
+      - redis_password
+
+  # --- MASTER CONTROLLER ---
+  master:
+    container_name: onion-pipe-master-test
+    image: sapphive/onion-pipe-relay:local
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - MASTER=true
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=debug
+      - NODE_ENV=development
+      - ADMIN_USER_FILE=/run/secrets/admin_user
+      - ADMIN_PASSWORD_FILE=/run/secrets/admin_password
+      - GITHUB_CLIENT_ID_FILE=/run/secrets/github_client_id
+      - GITHUB_CLIENT_SECRET_FILE=/run/secrets/github_client_secret
+      - SESSION_SECRET_FILE=/run/secrets/session_secret
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - PUBLIC_RELAY_URL=http://localhost:3000
+      - BYPASS_ADMIN_MFA=true # Enabled for easier local testing
+    secrets:
+      - admin_user
+      - admin_password
+      - github_client_id
+      - github_client_secret
+      - session_secret
+      - redis_password
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - onion-net
+
+  # --- INTERNAL BRIDGE ---
+  bridge:
+    container_name: onion-pipe-bridge-test
+    image: sapphive/onion-pipe-relay:local
+    restart: always
+    environment:
+      - BRIDGE_MODE=true
+      - RELAY_URL=ws://master:3000
+      - LOG_LEVEL=info
+    depends_on:
+      - master
+    networks:
+      - onion-net
+
+networks:
+  onion-net:
+    driver: bridge
+
+volumes:
+  redis_test_data:
+
+secrets:
+  redis_password:
+    file: ./secrets/redis_password
+  admin_user:
+    file: ./secrets/admin_user
+  admin_password:
+    file: ./secrets/admin_password
+  github_client_id:
+    file: ./secrets/github_client_id
+  github_client_secret:
+    file: ./secrets/github_client_secret
+  session_secret:
+    file: ./secrets/session_secret
