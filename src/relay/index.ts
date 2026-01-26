@@ -771,7 +771,7 @@ if (IS_MASTER) {
                     window.showToast = function(message, type = 'indigo') {
                         const toast = document.createElement('div');
                         toast.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full bg-slate-900 border border-' + type + '-500/50 shadow-2xl text-' + type + '-400 text-xs font-bold uppercase tracking-widest z-[100] animate-bounce';
-                        toast.innerHTML = '<i class="fas fa-check-circle mr-2"></i> ' + message;
+                        toast.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg> ' + message;
                         document.body.appendChild(toast);
                         setTimeout(() => {
                             toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
@@ -896,6 +896,43 @@ if (IS_MASTER) {
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: 'Failed to delete user: ' + err.message });
+    }
+  });
+
+  app.post("/dashboard/admin/users/bulk-status", isAdmin, async (req, res) => {
+    try {
+      const { ids, ban } = req.body;
+      if (!Array.isArray(ids)) throw new Error("Invalid IDs");
+      for (const id of ids) {
+        await redis.setUserBanStatus(id, ban);
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Bulk status update failed: ' + err.message });
+    }
+  });
+
+  app.post("/dashboard/tokens/bulk-delete", requireAuth, async (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids)) throw new Error("Invalid IDs");
+      
+      const isAdmin = (req.user as any).isAdmin;
+      const user = req.user as PassportUser;
+
+      for (const token of ids) {
+        if (isAdmin) {
+          await redis.deleteToken(token);
+        } else {
+          const meta = await redis.getTokenMetadata(token);
+          if (meta?.github_id === user.id) {
+            await redis.deleteToken(token, user.id);
+          }
+        }
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Bulk delete failed: ' + err.message });
     }
   });
 
@@ -1068,37 +1105,64 @@ if (IS_MASTER) {
                             <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 mb-6">
                                 <div class="relative flex-1">
                                     <input type="text" id="user-search" placeholder="Search users by name or ID..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-12 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all font-medium" onkeyup="window.userManager.debounceSearch(this.value)">
-                                    <i class="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
                                     <button id="user-search-clear" onclick="window.userManager.clearSearch()" class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-indigo-400 rounded-md border border-slate-700/50 transition-all shadow-lg active:scale-95" title="Clear Search">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                                             <path d="M 9.375 11.109375 C 9.539062 11.175781 9.695312 11.253906 9.851562 11.335938 C 9.898438 11.363281 9.945312 11.386719 9.992188 11.410156 C 10.128906 11.480469 10.269531 11.550781 10.40625 11.625 C 10.445312 11.644531 10.480469 11.664062 10.519531 11.683594 C 10.699219 11.777344 10.875 11.871094 11.054688 11.964844 C 11.34375 12.121094 11.636719 12.269531 11.929688 12.421875 C 12.328125 12.628906 12.726562 12.835938 13.125 13.046875 C 13.410156 13.195312 13.695312 13.34375 13.980469 13.492188 C 14.027344 13.519531 14.070312 13.542969 14.117188 13.566406 C 14.253906 13.636719 14.394531 13.710938 14.53125 13.78125 C 14.847656 13.945312 15.164062 14.113281 15.480469 14.277344 C 15.566406 14.320312 15.648438 14.363281 15.734375 14.40625 C 17.078125 15.109375 17.078125 15.109375 17.203125 15.234375 C 17.191406 15.597656 17.078125 15.886719 16.929688 16.21875 C 16.894531 16.296875 16.894531 16.296875 16.859375 16.378906 C 16.320312 17.617188 15.714844 18.824219 15 19.96875 C 14.980469 20.003906 14.957031 20.035156 14.9375 20.070312 C 14.625 20.574219 14.320312 21.023438 13.726562 21.203125 C 12.796875 21.414062 11.679688 20.804688 10.875 20.390625 C 10.78125 20.296875 10.78125 20.296875 10.765625 20.183594 C 10.785156 20.03125 10.828125 19.992188 10.941406 19.890625 C 10.972656 19.863281 11.007812 19.832031 11.042969 19.800781 C 11.078125 19.765625 11.117188 19.734375 11.152344 19.703125 C 11.226562 19.636719 11.300781 19.566406 11.375 19.5 C 11.410156 19.46875 11.445312 19.433594 11.480469 19.402344 C 11.972656 18.945312 12.714844 18.15625 12.851562 17.476562 C 12.84375 17.242188 12.792969 17.152344 12.65625 16.96875 C 12.519531 16.855469 12.367188 16.863281 12.191406 16.859375 C 12.003906 16.890625 11.886719 16.980469 11.769531 17.125 C 11.738281 17.164062 11.710938 17.207031 11.679688 17.25 C 11.648438 17.296875 11.617188 17.34375 11.582031 17.390625 C 11.550781 17.4375 11.519531 17.484375 11.484375 17.53125 C 11.214844 17.921875 10.921875 18.265625 10.59375 18.609375 C 10.558594 18.644531 10.523438 18.683594 10.488281 18.71875 C 10.285156 18.933594 10.066406 19.128906 9.835938 19.316406 C 9.808594 19.339844 9.78125 19.363281 9.753906 19.386719 C 9.570312 19.53125 9.464844 19.570312 9.234375 19.546875 C 9.113281 19.492188 9.113281 19.492188 8.992188 19.414062 C 8.945312 19.386719 8.902344 19.355469 8.855469 19.328125 C 8.78125 19.28125 8.78125 19.28125 8.710938 19.234375 C 8.660156 19.203125 8.613281 19.171875 8.558594 19.136719 C 7.335938 18.351562 7.335938 18.351562 7.171875 18.1875 C 7.171875 18.09375 7.167969 18 7.171875 17.90625 C 7.257812 17.863281 7.339844 17.820312 7.421875 17.78125 C 7.476562 17.753906 7.527344 17.726562 7.582031 17.703125 C 7.671875 17.65625 7.761719 17.613281 7.855469 17.570312 C 8.101562 17.457031 8.3125 17.320312 8.527344 17.15625 C 8.566406 17.128906 8.566406 17.128906 8.605469 17.097656 C 8.789062 16.957031 8.925781 16.820312 8.972656 16.589844 C 8.96875 16.382812 8.953125 16.242188 8.8125 16.078125 C 8.621094 15.941406 8.457031 15.90625 8.230469 15.941406 C 8.019531 16.015625 7.863281 16.160156 7.691406 16.296875 C 7.160156 16.699219 6.503906 16.847656 5.859375 16.96875 C 5.808594 16.976562 5.761719 16.988281 5.710938 17 C 5.421875 16.949219 5.265625 16.746094 5.0625 16.546875 C 5.003906 16.492188 4.941406 16.441406 4.882812 16.390625 C 3.597656 15.265625 3.597656 15.265625 3.546875 14.765625 C 3.53125 14.355469 3.59375 14.101562 3.863281 13.792969 C 4.183594 13.515625 4.464844 13.441406 4.878906 13.347656 C 6.324219 13.003906 7.730469 12.367188 8.824219 11.335938 C 8.855469 11.308594 8.886719 11.277344 8.921875 11.246094 C 8.949219 11.21875 8.976562 11.195312 9.003906 11.167969 C 9.140625 11.082031 9.210938 11.085938 9.375 11.109375 Z M 9.375 11.109375 M 19.742188 2.585938 C 20.148438 2.960938 20.417969 3.488281 20.453125 4.039062 C 20.457031 4.109375 20.457031 4.179688 20.457031 4.25 C 20.457031 4.28125 20.457031 4.3125 20.460938 4.34375 C 20.453125 4.820312 20.25 5.230469 20.035156 5.644531 C 20.011719 5.695312 19.984375 5.746094 19.960938 5.796875 C 19.773438 6.160156 19.585938 6.523438 19.390625 6.886719 C 19.238281 7.175781 19.089844 7.464844 18.9375 7.757812 C 18.855469 7.917969 18.769531 8.082031 18.6875 8.242188 C 18.636719 8.335938 18.589844 8.429688 18.539062 8.523438 C 18.480469 8.640625 18.417969 8.757812 18.359375 8.875 C 18.339844 8.914062 18.320312 8.949219 18.300781 8.984375 C 18.160156 9.253906 18 9.511719 17.828125 9.765625 C 17.757812 9.886719 17.757812 9.886719 17.769531 10.007812 C 17.820312 10.144531 17.878906 10.261719 17.945312 10.390625 C 18.414062 11.300781 18.359375 12.292969 18.054688 13.242188 C 18.015625 13.359375 17.976562 13.476562 17.933594 13.59375 C 17.917969 13.628906 17.90625 13.667969 17.894531 13.707031 C 17.796875 13.953125 17.796875 13.953125 17.667969 14.015625 C 17.460938 14.015625 17.320312 13.925781 17.140625 13.832031 C 17.082031 13.800781 17.082031 13.800781 17.023438 13.773438 C 16.902344 13.707031 16.78125 13.644531 16.65625 13.578125 C 16.578125 13.539062 16.5 13.496094 16.417969 13.453125 C 16.21875 13.351562 16.019531 13.246094 15.824219 13.140625 C 15.625 13.039062 15.429688 12.933594 15.230469 12.828125 C 15.195312 12.808594 15.15625 12.789062 15.121094 12.769531 C 14.835938 12.621094 14.554688 12.476562 14.273438 12.328125 C 13.949219 12.160156 13.625 11.988281 13.300781 11.820312 C 12.9375 11.628906 12.574219 11.4375 12.210938 11.25 C 12.050781 11.167969 11.890625 11.082031 11.726562 11 C 11.632812 10.949219 11.539062 10.902344 11.441406 10.851562 C 10.707031 10.472656 10.707031 10.472656 10.421875 10.300781 C 10.390625 10.28125 10.359375 10.261719 10.328125 10.246094 C 10.265625 10.171875 10.265625 10.171875 10.238281 10.042969 C 10.277344 9.824219 10.398438 9.71875 10.554688 9.5625 C 10.609375 9.507812 10.664062 9.453125 10.71875 9.394531 C 10.757812 9.355469 10.757812 9.355469 10.800781 9.3125 C 10.871094 9.242188 10.933594 9.164062 10.996094 9.085938 C 11.46875 8.527344 12.316406 8.101562 13.03125 7.96875 C 13.105469 7.96875 13.175781 7.96875 13.25 7.96875 C 13.59375 7.972656 13.59375 7.972656 13.921875 7.875 C 14.136719 7.652344 14.230469 7.347656 14.339844 7.0625 C 14.414062 6.878906 14.507812 6.707031 14.605469 6.53125 C 14.644531 6.457031 14.683594 6.382812 14.722656 6.308594 C 14.742188 6.269531 14.765625 6.230469 14.785156 6.1875 C 14.921875 5.925781 15.058594 5.660156 15.195312 5.398438 C 15.246094 5.296875 15.296875 5.195312 15.351562 5.097656 C 15.5 4.804688 15.648438 4.515625 15.796875 4.226562 C 15.839844 4.136719 15.882812 4.050781 15.925781 3.964844 C 15.980469 3.859375 16.035156 3.757812 16.085938 3.652344 C 16.464844 2.914062 16.890625 2.394531 17.691406 2.117188 C 18.402344 1.9375 19.171875 2.125 19.742188 2.585938 Z M 19.742188 2.585938 M 6.109375 7.554688 C 6.355469 7.722656 6.566406 7.917969 6.632812 8.214844 C 6.679688 8.53125 6.636719 8.765625 6.464844 9.035156 C 6.285156 9.265625 6.101562 9.355469 5.820312 9.414062 C 5.507812 9.441406 5.289062 9.375 5.046875 9.179688 C 4.820312 8.960938 4.730469 8.753906 4.714844 8.441406 C 4.722656 8.167969 4.800781 7.957031 4.988281 7.757812 C 5.308594 7.472656 5.710938 7.414062 6.109375 7.554688 Z M 6.109375 7.554688 M 3.664062 10.484375 C 3.898438 10.652344 4.035156 10.824219 4.101562 11.105469 C 4.144531 11.402344 4.09375 11.609375 3.945312 11.871094 C 3.753906 12.109375 3.585938 12.226562 3.28125 12.28125 C 2.964844 12.296875 2.734375 12.226562 2.480469 12.035156 C 2.257812 11.832031 2.191406 11.617188 2.179688 11.320312 C 2.191406 11.039062 2.265625 10.824219 2.457031 10.617188 C 2.804688 10.308594 3.257812 10.25 3.664062 10.484375 Z M 3.664062 10.484375 "/>
                                         </svg>
                                     </button>
                                 </div>
-                                <div class="flex items-center space-x-2">
-                                    <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap">Filter:</span>
-                                    <select onchange="window.userManager.setStatus(this.value)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer">
-                                        <option value="all">All Users</option>
-                                        <option value="active">Active Only</option>
-                                        <option value="banned">Banned Only</option>
+                                <div class="flex items-center space-x-3 bg-slate-950 border border-slate-700 rounded-lg pl-3 pr-1 py-0.5 transition-all focus-within:ring-1 focus-within:ring-indigo-500/50">
+                                    <span class="text-[10px] uppercase font-black text-slate-500 tracking-widest whitespace-nowrap select-none">Filter:</span>
+                                    <select onchange="window.userManager.setStatus(this.value)" class="bg-transparent text-slate-200 text-sm py-2 px-2 outline-none cursor-pointer min-w-[160px] font-bold appearance-none">
+                                        <option value="all" class="bg-slate-900">All Users</option>
+                                        <option value="active" class="bg-slate-900">Active Only</option>
+                                        <option value="banned" class="bg-slate-900">Banned Only</option>
                                     </select>
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 text-slate-600 mr-3 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7" /></svg>
                                 </div>
                             </div>
-                            <div class="overflow-x-auto">
-                                <table class="w-full text-sm text-left">
-                                    <thead class="text-xs text-slate-500 uppercase font-bold border-b border-slate-800">
-                                        <tr>
-                                            <th class="px-4 py-3">GitHub ID</th>
-                                            <th class="px-4 py-3">Username</th>
-                                            <th class="px-4 py-3 text-center">Hooks</th>
-                                            <th class="px-4 py-3 text-center">Status</th>
-                                            <th class="px-4 py-3 text-right">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="users-list-body" class="divide-y divide-slate-800">
-                                        <tr><td colspan="5" class="px-4 py-10 text-center italic text-slate-500">Loading users...</td></tr>
-                                    </tbody>
-                                </table>
+                            <!-- Users Table Container -->
+                            <div class="rounded-xl overflow-hidden relative">
+                                <!-- Bulk Action Bar (User Management - Top Position) -->
+                                <div id="user-bulk-bar" class="hidden mb-4 bg-slate-800/80 border border-slate-700/50 rounded-xl p-3 flex items-center justify-between shadow-lg backdrop-blur-sm animate-fade-in-down">
+                                    <div class="flex items-center gap-3">
+                                        <div class="bg-indigo-500/10 px-3 py-1 rounded-lg border border-indigo-500/20">
+                                            <span class="text-xs font-bold text-indigo-300"><span class="selection-count text-white">0</span> users selected</span>
+                                        </div>
+                                        <button onclick="window.userManager.clearSelection()" class="text-[10px] uppercase font-bold text-slate-500 hover:text-white transition-colors">Cancel</button>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button onclick="window.userManager.bulkAction('ban-users')" class="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-500 hover:text-red-400 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
+                                            Ban Selected
+                                        </button>
+                                        <button onclick="window.userManager.bulkAction('unban-users')" class="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-500 hover:text-emerald-400 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
+                                            Unban Selected
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="bg-slate-800/30 rounded-xl border border-slate-700/50 overflow-hidden">
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-sm text-left">
+                                            <thead class="text-xs text-slate-500 uppercase font-bold border-b border-slate-800 bg-slate-900/40">
+                                                <tr>
+                                                    <th class="px-4 py-3 w-10">
+                                                        <input type="checkbox" id="user-select-all" onclick="window.userManager.toggleAll(event)" class="w-5 h-5 rounded bg-slate-800 border-slate-600 text-indigo-500 accent-indigo-500 focus:ring-offset-slate-900 focus:ring-1 focus:ring-indigo-500 cursor-pointer transition-colors">
+                                                    </th>
+                                                    <th class="px-4 py-3">GitHub ID</th>
+                                                    <th class="px-4 py-3">Username</th>
+                                                    <th class="px-4 py-3 text-center">Hooks</th>
+                                                    <th class="px-4 py-3 text-center">Status</th>
+                                                    <th class="px-4 py-3 text-right">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="users-list-body" class="divide-y divide-slate-800/50">
+                                                <tr><td colspan="6" class="px-4 py-10 text-center italic text-slate-500">Loading users...</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                             <div class="mt-4 flex justify-between items-center text-xs text-slate-500 border-t border-slate-800 pt-4">
                                 <span id="user-pagination-info">Showing users...</span>
@@ -1145,7 +1209,7 @@ if (IS_MASTER) {
                             <div class="flex flex-col md:flex-row md:items-center space-y-4 md:space-y-0 md:space-x-4 mb-6">
                                 <div class="relative flex-1">
                                     <input type="text" id="token-search" placeholder="${isAdmin ? 'Search hooks by ID or Owner...' : 'Search hooks by ID or Project Name...'}" class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-12 py-2.5 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all font-medium" onkeyup="window.tokenManager.debounceSearch(this.value)">
-                                    <i class="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
                                     <button id="token-search-clear" onclick="window.tokenManager.clearSearch()" class="hidden absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-indigo-400 rounded-md border border-slate-700/50 transition-all shadow-lg active:scale-95" title="Clear Search">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                                             <path d="M 9.375 11.109375 C 9.539062 11.175781 9.695312 11.253906 9.851562 11.335938 C 9.898438 11.363281 9.945312 11.386719 9.992188 11.410156 C 10.128906 11.480469 10.269531 11.550781 10.40625 11.625 C 10.445312 11.644531 10.480469 11.664062 10.519531 11.683594 C 10.699219 11.777344 10.875 11.871094 11.054688 11.964844 C 11.34375 12.121094 11.636719 12.269531 11.929688 12.421875 C 12.328125 12.628906 12.726562 12.835938 13.125 13.046875 C 13.410156 13.195312 13.695312 13.34375 13.980469 13.492188 C 14.027344 13.519531 14.070312 13.542969 14.117188 13.566406 C 14.253906 13.636719 14.394531 13.710938 14.53125 13.78125 C 14.847656 13.945312 15.164062 14.113281 15.480469 14.277344 C 15.566406 14.320312 15.648438 14.363281 15.734375 14.40625 C 17.078125 15.109375 17.078125 15.109375 17.203125 15.234375 C 17.191406 15.597656 17.078125 15.886719 16.929688 16.21875 C 16.894531 16.296875 16.894531 16.296875 16.859375 16.378906 C 16.320312 17.617188 15.714844 18.824219 15 19.96875 C 14.980469 20.003906 14.957031 20.035156 14.9375 20.070312 C 14.625 20.574219 14.320312 21.023438 13.726562 21.203125 C 12.796875 21.414062 11.679688 20.804688 10.875 20.390625 C 10.78125 20.296875 10.78125 20.296875 10.765625 20.183594 C 10.785156 20.03125 10.828125 19.992188 10.941406 19.890625 C 10.972656 19.863281 11.007812 19.832031 11.042969 19.800781 C 11.078125 19.765625 11.117188 19.734375 11.152344 19.703125 C 11.226562 19.636719 11.300781 19.566406 11.375 19.5 C 11.410156 19.46875 11.445312 19.433594 11.480469 19.402344 C 11.972656 18.945312 12.714844 18.15625 12.851562 17.476562 C 12.84375 17.242188 12.792969 17.152344 12.65625 16.96875 C 12.519531 16.855469 12.367188 16.863281 12.191406 16.859375 C 12.003906 16.890625 11.886719 16.980469 11.769531 17.125 C 11.738281 17.164062 11.710938 17.207031 11.679688 17.25 C 11.648438 17.296875 11.617188 17.34375 11.582031 17.390625 C 11.550781 17.4375 11.519531 17.484375 11.484375 17.53125 C 11.214844 17.921875 10.921875 18.265625 10.59375 18.609375 C 10.558594 18.644531 10.523438 18.683594 10.488281 18.71875 C 10.285156 18.933594 10.066406 19.128906 9.835938 19.316406 C 9.808594 19.339844 9.78125 19.363281 9.753906 19.386719 C 9.570312 19.53125 9.464844 19.570312 9.234375 19.546875 C 9.113281 19.492188 9.113281 19.492188 8.992188 19.414062 C 8.945312 19.386719 8.902344 19.355469 8.855469 19.328125 C 8.78125 19.28125 8.78125 19.28125 8.710938 19.234375 C 8.660156 19.203125 8.613281 19.171875 8.558594 19.136719 C 7.335938 18.351562 7.335938 18.351562 7.171875 18.1875 C 7.171875 18.09375 7.167969 18 7.171875 17.90625 C 7.257812 17.863281 7.339844 17.820312 7.421875 17.78125 C 7.476562 17.753906 7.527344 17.726562 7.582031 17.703125 C 7.671875 17.65625 7.761719 17.613281 7.855469 17.570312 C 8.101562 17.457031 8.3125 17.320312 8.527344 17.15625 C 8.566406 17.128906 8.566406 17.128906 8.605469 17.097656 C 8.789062 16.957031 8.925781 16.820312 8.972656 16.589844 C 8.96875 16.382812 8.953125 16.242188 8.8125 16.078125 C 8.621094 15.941406 8.457031 15.90625 8.230469 15.941406 C 8.019531 16.015625 7.863281 16.160156 7.691406 16.296875 C 7.160156 16.699219 6.503906 16.847656 5.859375 16.96875 C 5.808594 16.976562 5.761719 16.988281 5.710938 17 C 5.421875 16.949219 5.265625 16.746094 5.0625 16.546875 C 5.003906 16.492188 4.941406 16.441406 4.882812 16.390625 C 3.597656 15.265625 3.597656 15.265625 3.546875 14.765625 C 3.53125 14.355469 3.59375 14.101562 3.863281 13.792969 C 4.183594 13.515625 4.464844 13.441406 4.878906 13.347656 C 6.324219 13.003906 7.730469 12.367188 8.824219 11.335938 C 8.855469 11.308594 8.886719 11.277344 8.921875 11.246094 C 8.949219 11.21875 8.976562 11.195312 9.003906 11.167969 C 9.140625 11.082031 9.210938 11.085938 9.375 11.109375 Z M 9.375 11.109375 M 19.742188 2.585938 C 20.148438 2.960938 20.417969 3.488281 20.453125 4.039062 C 20.457031 4.109375 20.457031 4.179688 20.457031 4.25 C 20.457031 4.28125 20.457031 4.3125 20.460938 4.34375 C 20.453125 4.820312 20.25 5.230469 20.035156 5.644531 C 20.011719 5.695312 19.984375 5.746094 19.960938 5.796875 C 19.773438 6.160156 19.585938 6.523438 19.390625 6.886719 C 19.238281 7.175781 19.089844 7.464844 18.9375 7.757812 C 18.855469 7.917969 18.769531 8.082031 18.6875 8.242188 C 18.636719 8.335938 18.589844 8.429688 18.539062 8.523438 C 18.480469 8.640625 18.417969 8.757812 18.359375 8.875 C 18.339844 8.914062 18.320312 8.949219 18.300781 8.984375 C 18.160156 9.253906 18 9.511719 17.828125 9.765625 C 17.757812 9.886719 17.757812 9.886719 17.769531 10.007812 C 17.820312 10.144531 17.878906 10.261719 17.945312 10.390625 C 18.414062 11.300781 18.359375 12.292969 18.054688 13.242188 C 18.015625 13.359375 17.976562 13.476562 17.933594 13.59375 C 17.917969 13.628906 17.90625 13.667969 17.894531 13.707031 C 17.796875 13.953125 17.796875 13.953125 17.667969 14.015625 C 17.460938 14.015625 17.320312 13.925781 17.140625 13.832031 C 17.082031 13.800781 17.082031 13.800781 17.023438 13.773438 C 16.902344 13.707031 16.78125 13.644531 16.65625 13.578125 C 16.578125 13.539062 16.5 13.496094 16.417969 13.453125 C 16.21875 13.351562 16.019531 13.246094 15.824219 13.140625 C 15.625 13.039062 15.429688 12.933594 15.230469 12.828125 C 15.195312 12.808594 15.15625 12.789062 15.121094 12.769531 C 14.835938 12.621094 14.554688 12.476562 14.273438 12.328125 C 13.949219 12.160156 13.625 11.988281 13.300781 11.820312 C 12.9375 11.628906 12.574219 11.4375 12.210938 11.25 C 12.050781 11.167969 11.890625 11.082031 11.726562 11 C 11.632812 10.949219 11.539062 10.902344 11.441406 10.851562 C 10.707031 10.472656 10.707031 10.472656 10.421875 10.300781 C 10.390625 10.28125 10.359375 10.261719 10.328125 10.246094 C 10.265625 10.171875 10.265625 10.171875 10.238281 10.042969 C 10.277344 9.824219 10.398438 9.71875 10.554688 9.5625 C 10.609375 9.507812 10.664062 9.453125 10.71875 9.394531 C 10.757812 9.355469 10.757812 9.355469 10.800781 9.3125 C 10.871094 9.242188 10.933594 9.164062 10.996094 9.085938 C 11.46875 8.527344 12.316406 8.101562 13.03125 7.96875 C 13.105469 7.96875 13.175781 7.96875 13.25 7.96875 C 13.59375 7.972656 13.59375 7.972656 13.921875 7.875 C 14.136719 7.652344 14.230469 7.347656 14.339844 7.0625 C 14.414062 6.878906 14.507812 6.707031 14.605469 6.53125 C 14.644531 6.457031 14.683594 6.382812 14.722656 6.308594 C 14.742188 6.269531 14.765625 6.230469 14.785156 6.1875 C 14.921875 5.925781 15.058594 5.660156 15.195312 5.398438 C 15.246094 5.296875 15.296875 5.195312 15.351562 5.097656 C 15.5 4.804688 15.648438 4.515625 15.796875 4.226562 C 15.839844 4.136719 15.882812 4.050781 15.925781 3.964844 C 15.980469 3.859375 16.035156 3.757812 16.085938 3.652344 C 16.464844 2.914062 16.890625 2.394531 17.691406 2.117188 C 18.402344 1.9375 19.171875 2.125 19.742188 2.585938 Z M 19.742188 2.585938 M 6.109375 7.554688 C 6.355469 7.722656 6.566406 7.917969 6.632812 8.214844 C 6.679688 8.53125 6.636719 8.765625 6.464844 9.035156 C 6.285156 9.265625 6.101562 9.355469 5.820312 9.414062 C 5.507812 9.441406 5.289062 9.375 5.046875 9.179688 C 4.820312 8.960938 4.730469 8.753906 4.714844 8.441406 C 4.722656 8.167969 4.800781 7.957031 4.988281 7.757812 C 5.308594 7.472656 5.710938 7.414062 6.109375 7.554688 Z M 6.109375 7.554688 M 3.664062 10.484375 C 3.898438 10.652344 4.035156 10.824219 4.101562 11.105469 C 4.144531 11.402344 4.09375 11.609375 3.945312 11.871094 C 3.753906 12.109375 3.585938 12.226562 3.28125 12.28125 C 2.964844 12.296875 2.734375 12.226562 2.480469 12.035156 C 2.257812 11.832031 2.191406 11.617188 2.179688 11.320312 C 2.191406 11.039062 2.265625 10.824219 2.457031 10.617188 C 2.804688 10.308594 3.257812 10.25 3.664062 10.484375 Z M 3.664062 10.484375 "/>
@@ -1155,6 +1219,17 @@ if (IS_MASTER) {
                                 <div class="flex items-center space-x-2">
                                     <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest whitespace-nowrap text-right">${isAdmin ? 'Owner' : 'Project'} Search:</span>
                                     <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg px-3 py-2 text-[10px] font-bold text-indigo-400 animate-pulse uppercase tracking-tighter">${isAdmin ? 'Enabled' : 'Active'}</div>
+                                </div>
+                            </div>
+                            <div class="relative bg-slate-900/50 rounded-xl border border-slate-800 p-4 mb-4 flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" id="token-select-all" onclick="window.tokenManager.toggleAll(event)" class="w-5 h-5 rounded bg-slate-800 border-slate-600 text-indigo-500 accent-indigo-500 focus:ring-offset-slate-900 focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-inner transition-colors">
+                                    <label for="token-select-all" class="text-xs font-bold text-slate-500 uppercase tracking-widest cursor-pointer select-none">Select All Hooks</label>
+                                </div>
+                                <div id="token-bulk-bar" class="hidden flex items-center gap-4 animate-fade-in">
+                                    <span class="text-xs font-bold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded"><span class="selection-count">0</span> selected</span>
+                                    <button onclick="window.tokenManager.bulkAction('delete-tokens')" class="text-[10px] bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-500 hover:text-red-400 px-3 py-1.5 rounded font-bold uppercase transition shadow-sm active:scale-95">Delete Selected</button>
+                                    <button onclick="window.tokenManager.clearSelection()" class="text-[10px] text-slate-500 hover:text-white uppercase font-bold transition">Cancel</button>
                                 </div>
                             </div>
                             <div id="tokens-list" class="space-y-4 min-h-[100px]">
@@ -1280,16 +1355,22 @@ if (IS_MASTER) {
                                 this.paginationInfo = document.getElementById(cfg.paginationId);
                                 this.prevBtn = document.getElementById(cfg.prevBtnId);
                                 this.nextBtn = document.getElementById(cfg.nextBtnId);
+                                this.bulkBarId = cfg.bulkBarId;
+                                this.selectAllId = cfg.selectAllId;
                                 this.page = 1;
                                 this.limit = 10;
                                 this.searchQuery = '';
                                 this.statusFilter = 'all';
                                 this.timer = null;
+                                this.selected = new Set();
                             }
 
                             async fetch(resetPage = false) {
                                 if (resetPage) this.page = 1;
                                 if (!this.listContainer) return;
+
+                                // Reset selection on page change or search
+                                this.clearSelection();
 
                                 const url = \`\${this.endpoint}?page=\${this.page}&limit=\${this.limit}&search=\${encodeURIComponent(this.searchQuery)}&status=\${this.statusFilter}\`;
 
@@ -1305,7 +1386,6 @@ if (IS_MASTER) {
                                         if (this.renderExtra) content += this.renderExtra(items);
 
                                         if (items.length === 0 && !this.renderExtra) { 
-                                            // Only show generic empty state if renderExtra didn't handle it
                                             content += this.getEmptyState();
                                         } else {
                                             content += items.map(this.render).join('');
@@ -1315,12 +1395,20 @@ if (IS_MASTER) {
                                     
                                     this.updatePagination(total);
                                 } catch (e) {
-                                    this.listContainer.innerHTML = \`<div class="text-center py-4 text-red-400">Error: \${e.message}</div>\`;
+                                    const isTable = this.listContainer.tagName === 'TBODY';
+                                    const errorMsg = \`Error: \${e.message}\`;
+                                    this.listContainer.innerHTML = isTable 
+                                        ? \`<tr><td colspan="6" class="text-center py-10 text-red-400 font-mono text-xs">\${errorMsg}</td></tr>\`
+                                        : \`<div class="text-center py-10 text-red-400 font-mono text-xs">\${errorMsg}</div>\`;
                                 }
                             }
 
                             getEmptyState() {
-                                return '<div class="text-center py-8 text-slate-500 italic">No results found</div>';
+                                const isTable = this.listContainer.tagName === 'TBODY';
+                                if (isTable) {
+                                    return '<tr><td colspan="6" class="text-center py-20 text-slate-500 italic text-sm tracking-wide">No results found matching your criteria!</td></tr>';
+                                }
+                                return '<div class="text-center py-20 text-slate-500 italic text-sm tracking-wide">No results found matching your criteria!</div>';
                             }
 
                             updatePagination(total) {
@@ -1336,7 +1424,6 @@ if (IS_MASTER) {
                             
                             debounceSearch(val) {
                                 this.searchQuery = val;
-                                // Toggle clear button visibility if it exists
                                 const inputId = this.endpoint.includes('users') ? 'user-search' : 'token-search';
                                 const clearBtn = document.getElementById(inputId + '-clear');
                                 if (clearBtn) clearBtn.classList.toggle('hidden', !val);
@@ -1358,6 +1445,84 @@ if (IS_MASTER) {
                                 this.statusFilter = val;
                                 this.fetch(true);
                             }
+
+                            toggleSelect(id) {
+                                if (this.selected.has(id)) this.selected.delete(id);
+                                else this.selected.add(id);
+                                this.updateBulkBar();
+                            }
+
+                            toggleAll(event) {
+                                const isChecked = event.target.checked;
+                                const checks = this.listContainer.querySelectorAll('input[type="checkbox"]');
+                                checks.forEach(c => {
+                                    c.checked = isChecked;
+                                    if (isChecked) this.selected.add(c.dataset.id);
+                                    else this.selected.delete(c.dataset.id);
+                                });
+                                this.updateBulkBar();
+                            }
+
+                            clearSelection() {
+                                this.selected.clear();
+                                if (this.selectAllId) {
+                                    const sa = document.getElementById(this.selectAllId);
+                                    if (sa) sa.checked = false;
+                                }
+                                this.updateBulkBar();
+                            }
+
+                            updateBulkBar() {
+                                if (!this.bulkBarId) return;
+                                const bar = document.getElementById(this.bulkBarId);
+                                if (!bar) return;
+                                
+                                const countSpan = bar.querySelector('.selection-count');
+                                if (countSpan) countSpan.innerText = this.selected.size;
+                                
+                                bar.classList.toggle('hidden', this.selected.size === 0);
+                            }
+
+                            async bulkAction(type) {
+                                const ids = Array.from(this.selected);
+                                if (ids.length === 0) return;
+
+                                let confirmMsg = \`Are you sure you want to perform this action on \${ids.length} items?\`;
+                                let url = '';
+                                let body = { ids };
+                                let method = 'POST';
+
+                                if (type === 'delete-tokens') {
+                                    confirmMsg = \`Delete \${ids.length} selected tunnels?\`;
+                                    url = '/dashboard/tokens/bulk-delete';
+                                    method = 'POST'; // We used POST to handle body easily in simple way
+                                } else if (type === 'ban-users') {
+                                    confirmMsg = \`Ban \${ids.length} selected users?\`;
+                                    url = '/dashboard/admin/users/bulk-status';
+                                    body.ban = true;
+                                } else if (type === 'unban-users') {
+                                    confirmMsg = \`Unban \${ids.length} selected users?\`;
+                                    url = '/dashboard/admin/users/bulk-status';
+                                    body.ban = false;
+                                }
+
+                                if (!await window.confirmModal('Bulk Action', confirmMsg)) return;
+
+                                try {
+                                    const res = await fetch(url, {
+                                        method,
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(body)
+                                    });
+                                    if (res.ok) {
+                                        window.showToast('Bulk action completed');
+                                        this.fetch();
+                                    } else {
+                                        const err = await res.json();
+                                        window.showToast(err.error || 'Action failed', 'red');
+                                    }
+                                } catch (e) { window.showToast(e.message, 'red'); }
+                            }
                         }
 
                         // Initialize Managers
@@ -1367,12 +1532,19 @@ if (IS_MASTER) {
                             paginationId: 'user-pagination-info',
                             prevBtnId: 'user-prev-btn',
                             nextBtnId: 'user-next-btn',
+                            bulkBarId: 'user-bulk-bar',
+                            selectAllId: 'user-select-all',
                             render: (u) => \`
-                                <tr class="hover:bg-slate-800/30 transition-colors">
-                                    <td class="px-4 py-3 font-mono text-xs text-slate-400">\${u.github_id}</td>
-                                    <td class="px-4 py-3 font-bold text-indigo-300">\${u.username}</td>
+                                <tr class="hover:bg-slate-800/30 transition-colors group">
+                                    <td class="px-4 py-3">
+                                        <input type="checkbox" data-id="\${u.github_id}" onclick="window.userManager.toggleSelect('\${u.github_id}')" class="w-5 h-5 rounded bg-slate-800 border-slate-600 text-indigo-500 accent-indigo-500 focus:ring-offset-slate-900 focus:ring-1 focus:ring-indigo-500 cursor-pointer transition-colors">
+                                    </td>
+                                    <td class="px-4 py-3 font-mono text-xs text-slate-400 font-bold">\${u.github_id}</td>
+                                    <td class="px-4 py-3 font-extrabold text-indigo-300">\${u.username}</td>
                                     <td class="px-4 py-3 text-center">\${u.hook_count || 0}</td>
-                                    <td class="px-4 py-3 text-center text-[10px] uppercase font-bold \${u.is_banned ? 'text-red-500' : 'text-green-500'}">\${u.is_banned ? 'BANNED' : 'ACTIVE'}</td>
+                                    <td class="px-4 py-3 text-center text-[10px] uppercase font-bold \${u.is_banned ? 'text-red-500' : 'text-green-500'}">
+                                        <span class="bg-black/40 px-2 py-0.5 rounded border \${u.is_banned ? 'border-red-500/30' : 'border-green-500/30'}">\${u.is_banned ? 'BANNED' : 'ACTIVE'}</span>
+                                    </td>
                                     <td class="px-4 py-3 text-right space-x-2">
                                         <button onclick="window.toggleBan('\${u.github_id}', \${!u.is_banned})" class="text-xs uppercase font-bold tracking-wider \${u.is_banned ? 'text-green-400 hover:text-green-300' : 'text-amber-400 hover:text-amber-300'}">\${u.is_banned ? 'Unban' : 'Ban'}</button>
                                         <button onclick="window.deleteUser('\${u.github_id}', '\${u.username}')" class="text-red-400 hover:text-red-300 text-xs font-bold uppercase tracking-wider">Delete</button>
@@ -1386,11 +1558,13 @@ if (IS_MASTER) {
                             paginationId: 'token-pagination-info',
                             prevBtnId: 'token-prev-btn',
                             nextBtnId: 'token-next-btn',
+                            bulkBarId: 'token-bulk-bar',
+                            selectAllId: 'token-select-all',
                             render: (t) => {
                                 const publicUrl = window.location.origin + '/h/' + t.token;
                                 const projectName = t.metadata?.project_name || 'Default';
                                 return \`
-                                <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 bg-slate-900/40 shadow-lg group/item">
+                                <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 bg-slate-900/40 shadow-lg group/item relative overflow-hidden transition-all hover:border-slate-700">
                                     <div class="flex-1">
                                         <!-- Top Row: Project Branding & Action -->
                                         <div class="flex items-center justify-between mb-3">
@@ -1404,23 +1578,33 @@ if (IS_MASTER) {
                                                      </span>\`
                                                 }
                                             </div>
-                                            <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:border-red-500/20 border border-transparent px-3 py-1.5 rounded-lg transition-all uppercase tracking-widest flex-shrink-0">Delete</button>
+                                            <div class="flex items-center space-x-4">
+                                                <button onclick="window.deleteToken('\${t.token}')" class="text-red-500 text-[10px] font-black hover:bg-red-500/10 hover:border-red-500/20 border border-transparent px-3 py-1.5 rounded-lg transition-all uppercase tracking-widest flex-shrink-0">Delete</button>
+                                                <input type="checkbox" data-id="\${t.token}" onclick="window.tokenManager.toggleSelect('\${t.token}')" class="w-5 h-5 rounded bg-slate-800 border-slate-600 text-indigo-500 accent-indigo-500 focus:ring-offset-slate-900 focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-inner transition-colors">
+                                            </div>
                                         </div>
 
                                         <!-- Middle Row: Public URL -->
-                                        <div class="mb-4">
-                                            <div onclick="window.copySnippet(this)" class="bg-black/60 border border-slate-700/50 rounded-lg p-3 text-xs text-indigo-300 font-mono cursor-pointer hover:border-indigo-500/30 transition-all select-all">\${publicUrl}</div>
+                                        <div class="mb-5">
+                                            <div class="flex items-center space-x-2 mb-2">
+                                                <span class="text-[10px] uppercase font-black text-slate-500 tracking-tighter whitespace-nowrap">PUBLIC WEBHOOK URL:</span>
+                                                <span class="h-px flex-1 bg-slate-800/50"></span>
+                                            </div>
+                                            <div onclick="window.copySnippet(this)" class="bg-black/60 border border-slate-700/50 rounded-lg p-3 text-xs text-indigo-300 font-mono cursor-pointer hover:border-indigo-500/30 transition-all select-all shadow-inner relative group/url overflow-hidden">
+                                                <div class="absolute inset-0 bg-indigo-500/5 opacity-0 group-hover/url:opacity-100 transition-opacity pointer-events-none"></div>
+                                                \${publicUrl}
+                                            </div>
                                         </div>
 
                                         <!-- Bottom Row: Technical Metadata -->
                                         <div class="flex flex-col md:flex-row md:items-center justify-between gap-y-2 md:gap-y-0 text-[10px]">
                                             <div class="flex items-center space-x-2">
                                                 <span class="uppercase font-black text-slate-600 tracking-tighter">TUNNEL ID:</span>
-                                                <code class="text-slate-500 font-mono italic">\${t.token}</code>
+                                                <code class="text-slate-500 font-mono italic font-bold tracking-tight">\${t.token}</code>
                                             </div>
                                             <div class="flex items-center space-x-2">
                                                 <span class="uppercase font-black text-slate-600 tracking-tighter">SERVICE:</span>
-                                                <p class="text-slate-500 italic font-mono">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
+                                                <p class="text-slate-500 italic font-mono font-bold tracking-tight">\${t.metadata?.onion_service_id || 'unknown'}.onion</p>
                                             </div>
                                         </div>
                                     </div>
