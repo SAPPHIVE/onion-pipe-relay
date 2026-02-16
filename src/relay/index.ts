@@ -17,7 +17,7 @@ import crypto from "crypto";
 import { setupMfaRoutes } from "./mfa";
 
 const logger = pino({
-  name: "EntryRelay",
+  name: "LOOHIVE-Relay",
   transport: { target: "pino-pretty" },
   level: process.env.LOG_LEVEL || "info",
 });
@@ -155,6 +155,7 @@ app.use(async (req, res, next) => {
 });
 
 const bridgeConnections = new Map<string, WebSocket>();
+const pendingRequests = new Map<string, { res: express.Response, timeout: NodeJS.Timeout }>();
 const PORT = process.env.PORT || 3000;
 
 // --- MASTER MODE CONFIG ---
@@ -201,13 +202,14 @@ if (IS_MASTER) {
   );
 
   if (githubClientId && githubClientSecret) {
-    logger.info("🔑 GitHub OAuth Strategy initialized");
+    const publicUrl = process.env.PUBLIC_RELAY_URL || `http://localhost:${PORT}`;
+    logger.info({ publicUrl }, "🔑 GitHub OAuth Strategy initialized");
     passport.use(
       new GitHubStrategy(
         {
           clientID: githubClientId,
           clientSecret: githubClientSecret,
-          callbackURL: `${process.env.PUBLIC_RELAY_URL}/auth/github/callback`,
+          callbackURL: `${publicUrl}/auth/github/callback`,
         },
         async (
           accessToken: string,
@@ -447,23 +449,23 @@ if (IS_MASTER) {
     res.send(`
             <html>
             <head>
-                <title>Onion-Pipe | Privacy-First Webhook Relay (maintained by Sapphive)</title>
-                <meta name="description" content="Securely tunnel webhooks to localhost using the Tor network. Onion-Pipe is an open-source system maintained by the Sapphive Infrastructure Team.">
-                <meta name="keywords" content="onion-pipe, tor, webhook relay, tunnel, localhost, privacy, security, sapphive">
+                <title>Onion-Pipe | Privacy-First Webhook Relay (maintained by LOOHIVE)</title>
+                <meta name="description" content="Securely tunnel webhooks to localhost using the Tor network. Onion-Pipe is an open-source system maintained by the LOOHIVE Infrastructure Team.">
+                <meta name="keywords" content="onion-pipe, tor, webhook relay, tunnel, localhost, privacy, security, LOOHIVE">
                 
                 <!-- Open Graph / Facebook -->
                 <meta property="og:type" content="website">
-                <meta property="og:url" content="https://onion-pipe.sapphive.com">
+                <meta property="og:url" content="https://onion-pipe.loohive.com">
                 <meta property="og:title" content="Onion-Pipe | Secure Webhook Tunnels">
                 <meta property="og:description" content="Open-source anonymous and secure webhook delivery to your local machine via Tor.">
-                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <meta property="og:image" content="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png">
 
                 <!-- Twitter -->
                 <meta property="twitter:card" content="summary">
-                <meta property="twitter:url" content="https://onion-pipe.sapphive.com">
+                <meta property="twitter:url" content="https://onion-pipe.loohive.com">
                 <meta property="twitter:title" content="Onion-Pipe | Secure Webhook Tunnels">
                 <meta property="twitter:description" content="Protect your local dev environment with E2E encrypted webhook tunnels over Tor.">
-                <meta property="twitter:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <meta property="twitter:image" content="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png">
 
                 <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
@@ -494,7 +496,7 @@ if (IS_MASTER) {
 
                     <p class="mt-8 text-xs text-slate-500">
                         <span class="block mb-2 text-xs text-slate-500">Authenticate CLI:</span>
-                        <code onclick="window.copyLandingSnippet(this)" class="bg-black/50 px-2 py-1 rounded text-indigo-300 font-mono cursor-pointer hover:text-white transition-colors border border-transparent hover:border-indigo-500/30">docker run -it --rm sapphive/onion-pipe login</code>
+                        <code onclick="window.copyLandingSnippet(this)" class="bg-black/50 px-2 py-1 rounded text-indigo-300 font-mono cursor-pointer hover:text-white transition-colors border border-transparent hover:border-indigo-500/30">docker run -it --rm loohive/onion-pipe login</code>
                         <span class="block mt-1 text-[10px] opacity-70 italic text-slate-400">Sync your account and generate API keys via terminal</span>
                     </p>
 
@@ -562,7 +564,7 @@ if (IS_MASTER) {
                 <title>Login | Onion-Pipe Secure Access</title>
                 <meta name="description" content="Sign in to the Onion-Pipe dashboard to manage secure tunnels and API keys.">
                 <meta property="og:title" content="Login | Onion-Pipe">
-                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <meta property="og:image" content="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png">
                 <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
@@ -589,7 +591,7 @@ if (IS_MASTER) {
                 <title>Login | Onion-Pipe Secure Access</title>
                 <meta name="description" content="Sign in to the Onion-Pipe dashboard to manage secure tunnels and API keys.">
                 <meta property="og:title" content="Login | Onion-Pipe">
-                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <meta property="og:image" content="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png">
                 <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
@@ -946,10 +948,10 @@ if (IS_MASTER) {
     res.send(`
             <html>
             <head>
-                <title>Dashboard | Onion-Pipe Management (maintained by Sapphive)</title>
+                <title>Dashboard | Onion-Pipe Management (maintained by LOOHIVE)</title>
                 <meta name="description" content="Manage your anonymous webhook tunnels, rotate API keys, and configure Multi-Factor Authentication.">
                 <meta property="og:title" content="Dashboard | Onion-Pipe">
-                <meta property="og:image" content="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png">
+                <meta property="og:image" content="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png">
                 <link rel="icon" href="/logo.png">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
@@ -1000,7 +1002,7 @@ if (IS_MASTER) {
                         </div>
                         <div class="text-right">
                             <p class="text-[10px] text-slate-500 uppercase font-bold">CLI Usage</p>
-                            <code onclick="window.copySnippet(this)" class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400 font-mono cursor-pointer hover:text-indigo-300 transition-colors border border-transparent hover:border-indigo-500/30">docker run -it --rm sapphive/onion-pipe login</code>
+                            <code onclick="window.copySnippet(this)" class="text-[10px] bg-black/50 px-2 py-1 rounded text-slate-400 font-mono cursor-pointer hover:text-indigo-300 transition-colors border border-transparent hover:border-indigo-500/30">docker run -it --rm loohive/onion-pipe login</code>
                         </div>
                     </div>
                     `
@@ -1642,7 +1644,7 @@ if (IS_MASTER) {
                                                                     Step 0: CLI Login (Optional)
                                                                 </p>
                                                                 <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-xs text-indigo-100/80 hover:border-indigo-500/30 transition-colors select-all cursor-pointer">
-                                                                    docker run -it --rm <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span> login
+                                                                    docker run -it --rm <span class="text-indigo-400 font-bold">loohive/onion-pipe</span> login
                                                                 </div>
                                                                 <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
                                                                     Authorizes your terminal and provides a pre-filled deployment command.
@@ -1655,7 +1657,7 @@ if (IS_MASTER) {
                                                                     Step 1: Key Initialization
                                                                 </p>
                                                                 <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-xs text-indigo-100/80 hover:border-indigo-500/30 transition-colors select-all cursor-pointer">
-                                                                    docker run --rm -v ./registration:/registration <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span> init
+                                                                    docker run --rm -v ./registration:/registration <span class="text-indigo-400 font-bold">loohive/onion-pipe</span> init
                                                                 </div>
                                                             </div>
                                                             
@@ -1665,7 +1667,7 @@ if (IS_MASTER) {
                                                                     Step 2: Deployment (Single Line)
                                                                 </p>
                                                                 <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 break-all select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
-                                                                    docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e RELAY_URL="\${relayUrl}" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">sapphive/onion-pipe</span>
+                                                                    docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e RELAY_URL="\${relayUrl}" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">loohive/onion-pipe</span>
                                                                 </div>
                                                                 <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
                                                                     Note: FORWARD_DEST should point to your local application endpoint (e.g., localhost:8080) or another Docker container's name/IP if your app is also containerized.
@@ -1680,7 +1682,7 @@ if (IS_MASTER) {
                                                                 <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 overflow-x-auto text-[11px] leading-relaxed text-indigo-100/80 hover:border-indigo-500/30 transition-colors select-all cursor-pointer font-mono">
                                                                     <div><span class="text-indigo-400">services:</span></div>
                                                                     <div>&nbsp;&nbsp;<span class="text-indigo-400">onion-pipe:</span></div>
-                                                                    <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">image:</span> sapphive/onion-pipe</div>
+                                                                    <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">image:</span> loohive/onion-pipe</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">container_name:</span> onion-pipe</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">restart:</span> unless-stopped</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">volumes:</span></div>
@@ -1725,7 +1727,7 @@ if (IS_MASTER) {
                                                         <p class="text-[10px] text-slate-500 italic">
                                                             <span class="text-indigo-400 font-bold">ProTip!</span> Mount a permanent volume to keep your .onion address forever.
                                                         </p>
-                                                        <a href="https://hub.docker.com/r/sapphive/onion-pipe" target="_blank" class="text-[10px] text-indigo-400 hover:underline font-bold uppercase tracking-tighter">View Docker Hub →</a>
+                                                        <a href="https://hub.docker.com/r/loohive/onion-pipe" target="_blank" class="text-[10px] text-indigo-400 hover:underline font-bold uppercase tracking-tighter">View Docker Hub →</a>
                                                     </div>
                                                 </div>
                                             </details>
@@ -2019,6 +2021,24 @@ wss.on("connection", (ws, req) => {
           uptime: msg.uptime || 0,
           last_seen: Date.now(),
         });
+      } else if (msg.type === "response") {
+        const { requestId, status, data: responseData, headers: responseHeaders } = msg;
+        const pending = pendingRequests.get(requestId);
+        if (pending) {
+            clearTimeout(pending.timeout);
+            pendingRequests.delete(requestId);
+            
+            // Forward headers back to client
+            if (responseHeaders) {
+                Object.entries(responseHeaders).forEach(([k, v]) => {
+                    // Filter out security or hop-by-hop headers if needed
+                    if (!['content-encoding', 'transfer-encoding', 'connection'].includes(k.toLowerCase())) {
+                        pending.res.setHeader(k, v as string);
+                    }
+                });
+            }
+            pending.res.status(status || 200).send(responseData);
+        }
       }
     } catch (e) {
       /* ignore malformed heartbeat */
@@ -2120,8 +2140,10 @@ app.post("/register", async (req, res) => {
   });
 });
 
-app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
-  const token = req.params.token as string;
+app.all(/^\/h\/(?<token>[^\/]+)(?:\/(?<path>.*))?/, express.text({ type: "*/*" }), async (req: express.Request, res: express.Response) => {
+  const { token, path } = req.params as any;
+  const subpath = path || "";
+  
   try {
     const metadata = await redis.getTokenMetadata(token);
     if (!metadata || metadata.status !== "active") return res.status(404).end();
@@ -2129,14 +2151,14 @@ app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
     // 1. BAN CHECK: Ensure the owner isn't banned
     if (metadata.github_id) {
         const isBanned = await redis.isUserBanned(metadata.github_id);
-        if (isBanned) return res.status(403).json({ error: "TUNNEL_SUSPENDED" });
+        if (isBanned) return res.status(403).json({ error: "LOOHIVE_SUSPENDED" });
     }
 
     // 2. RATE LIMITING: Simple 100 req / 10s per token
     const rateKey = `ratelimit:${token}`;
     const count = await redis.getClient().incr(rateKey);
     if (count === 1) await redis.getClient().expire(rateKey, 10);
-    if (count > 100) return res.status(429).json({ error: "TOO_MANY_REQUESTS" });
+    if (count > 200) return res.status(429).json({ error: "TOO_MANY_REQUESTS" });
 
     if (!metadata.public_key) {
       logger.error({ token }, "Terminal Error: Active hook missing public key");
@@ -2145,22 +2167,21 @@ app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
       });
     }
 
-    // Try to parse as JSON if possible for a cleaner payload, otherwise send as raw string
-    let data = req.body;
-    try {
-      if (typeof req.body === 'string' && req.body.startsWith('{')) {
-          data = JSON.parse(req.body);
-      }
-    } catch (e) {
-      // Keep as string
-    }
+    const requestId = uuidv4();
+
+    // Prepare full request context to be sent through the tunnel
+    const rawSubpath = (Array.isArray(path) ? path[0] : path) || "";
+    const requestContext = {
+        method: req.method,
+        path: rawSubpath.startsWith("/") ? rawSubpath : "/" + rawSubpath,
+        headers: req.headers,
+        body: req.body,
+        timestamp: Date.now(),
+        requestId
+    };
 
     const payloadToSend = await CryptoService.encrypt(
-      JSON.stringify({
-        data,
-        timestamp: Date.now(),
-        nonce: uuidv4(),
-      }),
+      JSON.stringify(requestContext),
       metadata.public_key,
     );
 
@@ -2175,15 +2196,29 @@ app.post("/h/:token", express.text({ type: "*/*" }), async (req, res) => {
     const selectedId = activeIds[Math.floor(Math.random() * activeIds.length)];
     const ws = bridgeConnections.get(selectedId);
 
+    // Setup the pending request for synchronous response
+    const timeout = setTimeout(() => {
+        if (pendingRequests.has(requestId)) {
+            pendingRequests.delete(requestId);
+            res.status(504).json({ 
+                error: "GATEWAY_TIMEOUT", 
+                message: "The application behind the Tor tunnel did not respond in time." 
+            });
+        }
+    }, 45000); // 45s for Tor/Hidden Service latency
+
+    pendingRequests.set(requestId, { res, timeout });
+
     ws?.send(
       JSON.stringify({
         type: "dispatch",
+        requestId,
         onion_service_id: metadata.onion_service_id,
         payload: payloadToSend,
       }),
     );
 
-    res.status(202).json({ status: "dispatched" });
+    // We no longer send status 202; the response will be sent by the WebSocket message handler
   } catch (err: any) {
     logger.error(
       { err: err.message, stack: err.stack, token },

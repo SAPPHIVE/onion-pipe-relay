@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
 
-const logger = pino({ name: 'SecretUtility' });
+const logger = pino({ name: 'LOOHIVE-Secrets' });
 
 /**
  * Returns the value of a secret.

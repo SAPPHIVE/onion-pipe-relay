@@ -22,7 +22,7 @@ services:
   master:
     # REFRESH SECRETS CMD: docker kill -s SIGHUP onion-pipe-master
     container_name: onion-pipe-master
-    image: sapphive/onion-pipe-relay:latest
+    image: loohive/onion-pipe-relay:latest
     restart: always
     # No ports exposed to host - handled by NPM via npm_public network
     environment:
@@ -55,7 +55,7 @@ services:
   # Ensures the relay works immediately even if no community bridges join.
   internal-bridge:
     container_name: onion-pipe-internal-bridge
-    image: sapphive/onion-pipe-relay:latest
+    image: loohive/onion-pipe-relay:latest
     restart: always
     environment:
       - BRIDGE_MODE=true

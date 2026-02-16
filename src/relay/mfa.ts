@@ -10,7 +10,7 @@ import qrcode from 'qrcode';
 import { RedisService, UserMfa, WebAuthnCredential } from '../common/redis';
 import pino from 'pino';
 
-const logger = pino({ name: 'MFA' });
+const logger = pino({ name: 'LOOHIVE-MFA' });
 const router = Router();
 
 // Robust Origin and RP_ID configuration

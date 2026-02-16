@@ -1,6 +1,6 @@
-# <img src="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png" height="32"> Onion-Pipe: Privacy-First Webhook Relay (maintained by Sapphive)
+# <img src="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png" height="32"> Onion-Pipe: Privacy-First Webhook Relay (maintained by LOOHIVE)
 
-Onion-Pipe is an open-source anonymous webhook system maintained by the Sapphive Infrastructure Team. It leverages the Tor network to allow developers to receive webhooks on localhost without exposing ports or trusting a centralized relay with decrypted data.
+Onion-Pipe is an open-source anonymous webhook system maintained by the LOOHIVE Infrastructure Team. It leverages the Tor network to allow developers to receive webhooks on localhost without exposing ports or trusting a centralized relay with decrypted data.
 
 ## 🚀 Key Features
 - **GitHub Authentication**: Secure identity-based bridge management.
@@ -51,7 +51,7 @@ services:
       - internal
 
   master:
-    image: sapphive/onion-pipe-relay:latest
+    image: loohive/onion-pipe-relay:latest
     environment:
       - MASTER=true
       - REDIS_URL=redis://redis:6379
@@ -92,17 +92,17 @@ Join the community network and help route traffic. Bridges are stateless and "bl
 ```yaml
 services:
   bridge:
-    image: sapphive/onion-pipe-relay:latest
+    image: loohive/onion-pipe-relay:latest
     environment:
       - BRIDGE_MODE=true
-      - RELAY_URL=wss://onion-pipe.sapphive.com
+      - RELAY_URL=wss://onion-pipe.loohive.com
     restart: always
 ```
 
 ### 4. Standalone Relay (Simple Entry)
 Run a basic entry relay without a dashboard (direct traffic only).
 ```bash
-docker run -d -p 80:3000 sapphive/onion-pipe-relay
+docker run -d -p 80:3000 loohive/onion-pipe-relay
 ```
 
 ### 5. Developer Client
@@ -111,7 +111,7 @@ Establish a tunnel to your local service.
 ```yaml
 services:
   client:
-    image: sapphive/onion-pipe:latest
+    image: loohive/onion-pipe:latest
     volumes:
       - ./keys:/var/lib/tor/hidden_service
     environment:
@@ -121,14 +121,14 @@ services:
 
 ## 🛰️ CLI Usage
 
-The `sapphive/onion-pipe` image includes a professional CLI to help you manage your account and register tunnels.
+The `loohive/onion-pipe` image includes a professional CLI to help you manage your account and register tunnels.
 
 ```bash
 # 1. Initialize local security keys
-docker run --rm -v ./registration:/registration sapphive/onion-pipe init
+docker run --rm -v ./registration:/registration loohive/onion-pipe init
 
 # 2. Login via GitHub (follows interactive prompts)
-docker run -it --rm sapphive/onion-pipe login
+docker run -it --rm loohive/onion-pipe login
 
 # 3. Register your local .onion address to your account (manual trigger)
 docker exec onion-pipe register
@@ -142,4 +142,4 @@ docker exec onion-pipe register
 ---
 
 ## ⚖️ Legal Disclaimer
-This is open-source software provided by SAPPHIVE. Tor is a trademark of The Tor Project, Inc. All trademarks belong to their respective owners.
+This is open-source software provided by LOOHIVE. Tor is a trademark of The Tor Project, Inc. All trademarks belong to their respective owners.

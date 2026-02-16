@@ -3,7 +3,7 @@ import pino from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 import { getSecret } from './secrets';
 
-const logger = pino({ name: 'RedisClient' });
+const logger = pino({ name: 'LOOHIVE-Redis' });
 
 export interface TokenMetadata {
     onion_service_id: string;

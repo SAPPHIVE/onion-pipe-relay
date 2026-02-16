@@ -1,6 +1,6 @@
-# <img src="https://raw.githubusercontent.com/SAPPHIVE/onion-pipe-relay/main/src/assets/logo/logo.png" height="32"> Onion-Pipe Relay Engine (by Sapphive)
+# <img src="https://raw.githubusercontent.com/loohive/onion-pipe-relay/main/src/assets/logo/logo.png" height="32"> Onion-Pipe Relay Engine (by LOOHIVE)
 
-![Docker Build](https://img.shields.io/docker/pulls/sapphive/onion-pipe-relay) ![License](https://img.shields.io/badge/license-MIT-green) ![Network](https://img.shields.io/badge/network-decentralized-blue)
+![Docker Build](https://img.shields.io/docker/pulls/loohive/onion-pipe-relay) ![License](https://img.shields.io/badge/license-MIT-green) ![Network](https://img.shields.io/badge/network-decentralized-blue)
 
 ## 🌐 The Engine of Onion-Pipe
 The **Onion-Pipe Relay Engine** is the backbone of the community network. It manages encrypted traffic transit, handles bridge discovery, and provides a professional dashboard for webhook management.
@@ -33,12 +33,12 @@ Before deploying, create a `secrets/` directory and add the following files (no 
 ## 🚀 Deployment Modes
 
 ### Mode A: Master Controller (Self-Hosted Hub)
-Perfect for organizations that want to host their own private "Sapphive-like" network.
+Perfect for organizations that want to host their own private "LOOHIVE-like" network.
 
 ```yaml
 services:
   master:
-    image: sapphive/onion-pipe-relay:latest
+    image: loohive/onion-pipe-relay:latest
     environment:
       - MASTER=true
       - REDIS_URL=redis://redis:6379
@@ -67,10 +67,10 @@ Bridges do not require a database or complex setup. They are stateless "blind" r
 ```yaml
 services:
   bridge:
-    image: sapphive/onion-pipe-relay:latest
+    image: loohive/onion-pipe-relay:latest
     environment:
       - BRIDGE_MODE=true
-      - RELAY_URL=wss://onion-pipe.sapphive.com  # Connect to the public Sapphive network
+      - RELAY_URL=wss://onion-pipe.loohive.com  # Connect to the public LOOHIVE network
     restart: always
 ```
 
@@ -80,7 +80,7 @@ services:
 
 | Mode | Flag | Target User |
 | :--- | :--- | :--- |
-| **Community Bridge** | `BRIDGE_MODE=true` | Volunteers helping the public Sapphive network. |
+| **Community Bridge** | `BRIDGE_MODE=true` | Volunteers helping the public LOOHIVE network. |
 | **Master Controller** | `MASTER=true` | Organizations hosting their own private tunnel server. |
 | **Standalone Relay** | (Default) | Developers running a direct entry point. |
 
@@ -94,13 +94,13 @@ services:
 ---
 
 ## 🤝 Support
-Developed by the **Sapphive Infrastructure Team**.
-*   **Repo:** [github.com/sapphive/onion-pipe-relay](https://github.com/sapphive/onion-pipe-relay)
-*   **Web Dashboard:** [onion-pipe.sapphive.com](https://onion-pipe.sapphive.com)
-*   **Inquiries:** [support@sapphive.com](mailto:support@sapphive.com)
+Developed by the **LOOHIVE Infrastructure Team**.
+*   **Repo:** [github.com/loohive/onion-pipe-relay](https://github.com/loohive/onion-pipe-relay)
+*   **Web Dashboard:** [onion-pipe.loohive.com](https://onion-pipe.loohive.com)
+*   **Inquiries:** [support@loohive.com](mailto:support@loohive.com)
 
 ---
 
 ## ⚖️ Legal Disclaimer
-This is open-source software provided by SAPPHIVE. Tor is a trademark of The Tor Project, Inc. All trademarks belong to their respective owners.
+This is open-source software provided by LOOHIVE. Tor is a trademark of The Tor Project, Inc. All trademarks belong to their respective owners.
 

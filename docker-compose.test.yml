@@ -20,7 +20,8 @@ services:
   # --- MASTER CONTROLLER ---
   master:
     container_name: onion-pipe-master-test
-    image: sapphive/onion-pipe-relay:local
+    image: LOOHIVE/onion-pipe-relay:local
+    build: .
     restart: always
     ports:
       - "3000:3000"
@@ -53,7 +54,8 @@ services:
   # --- INTERNAL BRIDGE ---
   bridge:
     container_name: onion-pipe-bridge-test
-    image: sapphive/onion-pipe-relay:local
+    image: LOOHIVE/onion-pipe-relay:local
+    build: .
     restart: always
     environment:
       - BRIDGE_MODE=true

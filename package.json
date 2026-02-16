@@ -1,7 +1,7 @@
 {
   "name": "onion-pipe-relay",
   "version": "1.0.0",
-  "description": "**Onion-Pipe** is an open-source anonymous webhook system maintained by the Sapphive Infrastructure Team. It pipes darknet traffic to your local services and is designed as a developer tool for testing webhooks securely.",
+  "description": "**Onion-Pipe** is an open-source anonymous webhook system maintained by the LOOHIVE Infrastructure Team. It pipes darknet traffic to your local services and is designed as a developer tool for testing webhooks securely.",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
@@ -13,16 +13,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SAPPHIVE/onion-pipe-relay.git"
+    "url": "git+https://github.com/loohive/onion-pipe-relay.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/SAPPHIVE/onion-pipe-relay/issues"
+    "url": "https://github.com/loohive/onion-pipe-relay/issues"
   },
-  "homepage": "https://github.com/SAPPHIVE/onion-pipe-relay#readme",
+  "homepage": "https://github.com/loohive/onion-pipe-relay#readme",
   "dependencies": {
     "@otplib/preset-default": "^12.0.1",
     "@simplewebauthn/server": "^13.2.2",

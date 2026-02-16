@@ -30,7 +30,7 @@ if [ "$BRIDGE_MODE" = "true" ]; then
     echo "✅ Tor is ready."
 
     # Run the bridge
-    echo "🛰️ Connecting to Relay: ${RELAY_URL:-ws://relay.sapphive.com}"
+    echo "🛰️ Connecting to Relay: ${RELAY_URL:-ws://relay.loohive.com}"
     export TOR_SOCKS=socks5h://127.0.0.1:9050
     exec su-exec node node dist/bridge/index.js
 fi

@@ -6,7 +6,7 @@ import path from 'path';
 
 const program = new Command();
 const CONFIG_PATH = path.join(process.cwd(), 'config.json');
-const RELAY_URL = process.env.RELAY_URL || 'https://onion-pipe.sapphive.com'; // Default to official relay
+const RELAY_URL = process.env.RELAY_URL || 'https://onion-pipe.loohive.com'; // Default to official relay
 
 program
   .name('onion-pipe')

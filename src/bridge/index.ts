@@ -3,7 +3,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import axios from 'axios';
 import pino from 'pino';
 
-const logger = pino({ name: 'BridgeRelay', transport: { target: 'pino-pretty' } });
+const logger = pino({ name: 'LOOHIVE-Bridge', transport: { target: 'pino-pretty' } });
 const RELAY_WS_URL = process.env.RELAY_URL || 'ws://relay:3000';
 const TOR_SOCKS = process.env.TOR_SOCKS || 'socks5h://tor:9050';
 const agent = new SocksProxyAgent(TOR_SOCKS);
@@ -26,23 +26,48 @@ function connect() {
         try {
             const msg = JSON.parse(data.toString());
             if (msg.type === 'dispatch') {
-                const { onion_service_id, payload } = msg;
-                logger.info({ onion_service_id }, 'Forwarding ciphertext to client');
+                const { onion_service_id, payload, requestId } = msg;
+                logger.info({ onion_service_id, requestId }, 'Forwarding request to client tunnel');
                 
-                // We send to the root of the onion service (Port 80)
-                // The onion-pipe client (nginx) will forward this to the local target
-                await axios.post(`http://${onion_service_id}.onion/`, 
-                    { payload }, 
-                    { 
-                        httpAgent: agent, 
-                        httpsAgent: agent, 
-                        timeout: 30000,
-                        headers: { 'Content-Type': 'application/json' }
-                    }
-                );
+                try {
+                    // Forward the encrypted request payload to the .onion service
+                    const response = await axios.post(`http://${onion_service_id}.onion/`, 
+                        { payload }, 
+                        { 
+                            httpAgent: agent, 
+                            httpsAgent: agent, 
+                            timeout: 40000, // 40s timeout for hidden service processing
+                            headers: { 'Content-Type': 'application/json' }
+                        }
+                    );
+
+                    // Send the application response back to the Relay
+                    ws.send(JSON.stringify({
+                        type: 'response',
+                        requestId,
+                        status: response.status,
+                        headers: response.headers,
+                        data: response.data
+                    }));
+                } catch (err: any) {
+                    const status = err.response?.status || 502;
+                    logger.error({ error: err.message, requestId, status }, 'Tunnel request failed');
+                    
+                    // Notify Relay that the tunnel failed
+                    ws.send(JSON.stringify({
+                        type: 'response',
+                        requestId,
+                        status,
+                        data: { 
+                            error: 'TUNNEL_REACH_ERROR', 
+                            message: 'Could not communicate with the local onion-pipe client.',
+                            details: err.message 
+                        }
+                    }));
+                }
             }
         } catch (err: any) {
-            logger.error({ error: err.message }, 'Bridge forwarding failed');
+            logger.error({ error: err.message }, 'Bridge message processing failed');
         }
     });
 
