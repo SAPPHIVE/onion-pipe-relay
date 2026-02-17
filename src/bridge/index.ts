@@ -37,17 +37,22 @@ function connect() {
                             httpAgent: agent, 
                             httpsAgent: agent, 
                             timeout: 40000, // 40s timeout for hidden service processing
-                            headers: { 'Content-Type': 'application/json' }
+                            headers: { 'Content-Type': 'application/json' },
+                            responseType: 'arraybuffer', // Handle binary payloads correctly
+                            decompress: false, // DON'T decompress; let the browser handle it
+                            validateStatus: () => true // Allow any status code
                         }
                     );
 
                     // Send the application response back to the Relay
+                    // Use base64 for the data buffer to ensure safe transport over JSON
                     ws.send(JSON.stringify({
                         type: 'response',
                         requestId,
                         status: response.status,
                         headers: response.headers,
-                        data: response.data
+                        data: Buffer.from(response.data).toString('base64'),
+                        isBinary: true
                     }));
                 } catch (err: any) {
                     const status = err.response?.status || 502;

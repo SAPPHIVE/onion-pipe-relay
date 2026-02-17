@@ -38,8 +38,15 @@ declare global {
   }
 }
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// --- SELECTIVE BODY PARSING ---
+// We skip global body parsing for tunnels (/h/) to allow express.raw to handle binary/large data correctly.
+app.use((req, res, next) => {
+    if (req.path.startsWith('/h/')) return next();
+    express.json()(req, res, (err) => {
+        if (err) return next(err);
+        express.urlencoded({ extended: true })(req, res, next);
+    });
+});
 app.use(cookieParser());
 
 // --- SECURITY HARDENING: Manual Security Headers (Protection without extra dependencies) ---
@@ -48,8 +55,13 @@ app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    // Content Security Policy to prevent XSS
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data: https://raw.githubusercontent.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self';");
+    
+    // Content Security Policy
+    // We only apply a strict CSP to the relay's own UI.
+    // Tunnels (/h/...) need to be unrestricted to allow the proxied app to function.
+    if (!req.path.startsWith('/h/')) {
+        res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data: https://raw.githubusercontent.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self';");
+    }
     next();
 });
 
@@ -90,6 +102,43 @@ app.use(
     },
   }),
 );
+
+// --- SMART SUBPATH ROUTING (Ngrok-style behavior) ---
+// This middleware catches orphaned requests (like /_next, /static) that belong to a tunnel
+// but were requested from the root because the browser didn't know about the subpath.
+app.use((req, res, next) => {
+    // List of paths that are NOT tunnels but should be treated as relay functions
+    const relayPaths = ['/auth', '/login', '/dashboard', '/register', '/api/mfa', '/assets', '/logo.png', '/cli-auth', '/mfa-challenge'];
+    const isRelayPath = relayPaths.some(p => req.path.startsWith(p)) || req.path === '/';
+    
+    // If it's NOT a relay path and NOT already prefixed with /h/
+    if (!isRelayPath && !req.path.startsWith('/h/')) {
+        const referer = req.get('Referer');
+        const lastTunnel = (req as any).cookies ? req.cookies['op-last-tunnel'] : null;
+        
+        // 1. Check Referer first (most accurate for concurrent multi-tab usage)
+        let token = null;
+        if (referer) {
+            const match = referer.match(/\/h\/([a-zA-Z0-9-]+)/);
+            if (match && match[1]) token = match[1];
+        }
+        
+        // 2. Fallback to Cookie (most reliable when Referer is stripped/missing)
+        if (!token && lastTunnel) {
+            token = lastTunnel;
+        }
+
+        if (token) {
+            logger.debug({ token, path: req.path, method: req.method, source: referer ? 'referer' : 'cookie' }, "🔀 Smart-Route: Redirecting to tunnel subpath");
+            
+            // Use 307 (Temporary Redirect) to preserve POST/PUT methods and bodies
+            // This is critical for API calls made by client-side JS (XHR/Fetch)
+            const query = req.url.includes('?') ? '?' + req.url.split('?')[1] : '';
+            return res.redirect(307, `/h/${token}${req.path}${query}`);
+        }
+    }
+    next();
+});
 
 // Session Hijacking Protection (Fingerprinting)
 app.use((req, res, next) => {
@@ -1666,11 +1715,25 @@ if (IS_MASTER) {
                                                                     <span class="w-2 h-2 bg-indigo-500 rounded-full mr-2"></span>
                                                                     Step 2: Deployment (Single Line)
                                                                 </p>
-                                                                <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 break-all select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
-                                                                    docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e RELAY_URL="\${relayUrl}" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">loohive/onion-pipe</span>
+                                                                
+                                                                <div class="space-y-4">
+                                                                    <div>
+                                                                        <p class="text-[9px] text-indigo-300/50 uppercase mb-1 font-semibold ml-1">Option A: Full Tunnel Multiplexer (Recommended)</p>
+                                                                        <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 break-all select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
+                                                                            docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e RELAY_URL="\${relayUrl}" -e SERVICES_MAP="/=http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">loohive/onion-pipe</span>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div>
+                                                                        <p class="text-[9px] text-indigo-300/50 uppercase mb-1 font-semibold ml-1">Option B: Legacy Single Forwarding</p>
+                                                                        <div onclick="window.copySnippet(this)" class="bg-black/40 border border-slate-800 rounded-xl p-4 text-[11px] text-indigo-100/80 break-all select-all cursor-pointer hover:border-indigo-500/30 transition-colors">
+                                                                            docker run -d --name onion-pipe -v ./registration:/registration -v ./onion_id:/var/lib/tor/hidden_service -e API_TOKEN="<span class="text-white font-bold">\${apiKey}</span>" -e RELAY_URL="\${relayUrl}" -e FORWARD_DEST="http://host.docker.internal:8080" <span class="text-indigo-400 font-bold">loohive/onion-pipe</span>
+                                                                        </div>
+                                                                    </div>
                                                                 </div>
+
                                                                 <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
-                                                                    Note: FORWARD_DEST should point to your local application endpoint (e.g., localhost:8080) or another Docker container's name/IP if your app is also containerized.
+                                                                    Note: SERVICES_MAP supports path-based routing (e.g., "/api=http://app:3000,/=http://web:80"). FORWARD_DEST is a legacy fallback for single targets.
                                                                 </p>
                                                             </div>
 
@@ -1691,10 +1754,11 @@ if (IS_MASTER) {
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">environment:</span></div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">API_TOKEN:</span> "<span class="text-white font-bold">\${apiKey}</span>"</div>
                                                                     <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">RELAY_URL:</span> "\${relayUrl}"</div>
-                                                                    <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">FORWARD_DEST:</span> http://host.docker.internal:8080</div>
+                                                                    <div class="text-indigo-300 font-bold">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-400">SERVICES_MAP:</span> "/api=http://api:3000,/web=http://ui:80,/=http://host.docker.internal:8080"</div>
+                                                                    <div class="text-slate-600">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-slate-500"># FORWARD_DEST:</span> http://host.docker.internal:8080</div>
                                                                 </div>
                                                                 <p class="mt-2 text-[10px] text-slate-500 italic leading-tight">
-                                                                    Note: FORWARD_DEST should point to your local application endpoint or another Docker container's name/IP if your app is containerized.
+                                                                    Note: SERVICES_MAP enables one address to route to multiple internal services via path prefixes.
                                                                 </p>
                                                             </div>
                                                             
@@ -2022,22 +2086,45 @@ wss.on("connection", (ws, req) => {
           last_seen: Date.now(),
         });
       } else if (msg.type === "response") {
-        const { requestId, status, data: responseData, headers: responseHeaders } = msg;
+        const { requestId, status, data: responseData, headers: responseHeaders, isBinary } = msg;
         const pending = pendingRequests.get(requestId);
         if (pending) {
             clearTimeout(pending.timeout);
             pendingRequests.delete(requestId);
             
+            // Safety check for pending response object
+            if (pending.res.writableEnded || pending.res.headersSent) {
+                logger.warn({ requestId }, "Attempted to send response to already ended request");
+                return;
+            }
+
             // Forward headers back to client
             if (responseHeaders) {
                 Object.entries(responseHeaders).forEach(([k, v]) => {
-                    // Filter out security or hop-by-hop headers if needed
-                    if (!['content-encoding', 'transfer-encoding', 'connection'].includes(k.toLowerCase())) {
-                        pending.res.setHeader(k, v as string);
+                    // Filter out hop-by-hop and length headers
+                    const lowerK = k.toLowerCase();
+                    if (!['content-encoding', 'transfer-encoding', 'connection', 'keep-alive', 'content-length'].includes(lowerK)) {
+                        try { pending.res.setHeader(k, v as string); } catch(e) {}
+                    }
+                    
+                    // Re-enable content-encoding ONLY if the bridge did NOT decompress it (which we now enforce)
+                    if (lowerK === 'content-encoding') {
+                        try { pending.res.setHeader(k, v as string); } catch(e) {}
                     }
                 });
             }
-            pending.res.status(status || 200).send(responseData);
+
+            try {
+                // Decode base64 if it's a binary/base64-encoded response from the bridge
+                const buffer = isBinary && typeof responseData === 'string' 
+                    ? Buffer.from(responseData, 'base64') 
+                    : responseData;
+
+                pending.res.status(status || 200).send(buffer);
+            } catch (err: any) {
+                logger.error({ err: err.message, requestId }, "Failed to send response buffer");
+                if (!pending.res.headersSent) pending.res.status(502).end();
+            }
         }
       }
     } catch (e) {
@@ -2140,13 +2227,22 @@ app.post("/register", async (req, res) => {
   });
 });
 
-app.all(/^\/h\/(?<token>[^\/]+)(?:\/(?<path>.*))?/, express.text({ type: "*/*" }), async (req: express.Request, res: express.Response) => {
+app.all(/^\/h\/(?<token>[^\/]+)(?:\/(?<path>.*))?/, express.raw({ type: "*/*", limit: '50mb' }), async (req: express.Request, res: express.Response) => {
   const { token, path } = req.params as any;
   const subpath = path || "";
   
   try {
     const metadata = await redis.getTokenMetadata(token);
     if (!metadata || metadata.status !== "active") return res.status(404).end();
+
+    // Set Tunnel Persistence Cookie ( Ngrok-style orphan request recovery )
+    res.cookie('op-last-tunnel', token, {
+        path: '/',
+        maxAge: 1000 * 60 * 60, // 1 hour of persistence
+        sameSite: 'lax',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production"
+    });
 
     // 1. BAN CHECK: Ensure the owner isn't banned
     if (metadata.github_id) {
@@ -2171,11 +2267,35 @@ app.all(/^\/h\/(?<token>[^\/]+)(?:\/(?<path>.*))?/, express.text({ type: "*/*" }
 
     // Prepare full request context to be sent through the tunnel
     const rawSubpath = (Array.isArray(path) ? path[0] : path) || "";
+    
+    // Enrich headers with proxy information
+    const enrichedHeaders = { ...req.headers };
+    
+    // Add standard proxy headers if missing
+    enrichedHeaders['x-forwarded-for'] = (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1';
+    enrichedHeaders['x-forwarded-host'] = (req.headers['x-forwarded-host'] as string) || req.get('host') || '';
+    enrichedHeaders['x-forwarded-proto'] = (req.headers['x-forwarded-proto'] as string) || req.protocol;
+    enrichedHeaders['x-forwarded-port'] = (req.headers['x-forwarded-port'] as string) || (req.get('host')?.split(':')[1]) || (req.protocol === 'https' ? '443' : '80');
+    enrichedHeaders['x-forwarded-prefix'] = `/h/${token}`;
+    enrichedHeaders['x-real-ip'] = (req.headers['x-real-ip'] as string) || req.ip || '127.0.0.1';
+
+    // RFC 7239 Forwarded header
+    if (!enrichedHeaders['forwarded']) {
+        enrichedHeaders['forwarded'] = `for=${enrichedHeaders['x-forwarded-for']};host=${enrichedHeaders['x-forwarded-host']};proto=${enrichedHeaders['x-forwarded-proto']}`;
+    }
+
+    // Prepare body for transport (Base64 for binary safety)
+    let bodyPayload = null;
+    if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+        bodyPayload = req.body.toString('base64');
+    }
+
     const requestContext = {
         method: req.method,
         path: rawSubpath.startsWith("/") ? rawSubpath : "/" + rawSubpath,
-        headers: req.headers,
-        body: req.body,
+        headers: enrichedHeaders,
+        body: bodyPayload,
+        isBase64: !!bodyPayload,
         timestamp: Date.now(),
         requestId
     };
